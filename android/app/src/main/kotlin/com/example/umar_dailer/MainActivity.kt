@@ -126,7 +126,7 @@ class MainActivity : FlutterFragmentActivity() {
         val telecomManager = getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
         if (telecomManager != null) {
             val phoneAccountHandle = android.telecom.PhoneAccountHandle(
-                android.content.ComponentName(this, MyCallService::class.java),
+                android.content.ComponentName(this, com.example.umar_dailer.services.MyConnectionService::class.java),
                 "UmarDialerAccount"
             )
             
@@ -247,7 +247,7 @@ class MainActivity : FlutterFragmentActivity() {
             if (telecomManager != null && isDefaultDialer()) {
                 try {
                     val phoneAccountHandle = android.telecom.PhoneAccountHandle(
-                        android.content.ComponentName(this, MyCallService::class.java),
+                        android.content.ComponentName(this, com.example.umar_dailer.services.MyConnectionService::class.java),
                         "UmarDialerAccount"
                     )
                     
@@ -306,7 +306,7 @@ class MainActivity : FlutterFragmentActivity() {
             
             // Method 1: Try using InCallService to properly end/reject the call
             try {
-                success = MyCallService.endCurrentCallStatic()
+                success = com.example.umar_dailer.services.MyCallService.endCurrentCall()
                 android.util.Log.d("MainActivity", "InCallService.endCurrentCall() success: $success")
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "InCallService.endCurrentCall() failed: ${e.message}")
@@ -386,7 +386,7 @@ class MainActivity : FlutterFragmentActivity() {
             // Try using InCallService to reject the incoming call
             var success = false
             try {
-                success = MyCallService.endCurrentCallStatic()
+                success = com.example.umar_dailer.services.MyCallService.endCurrentCall()
                 android.util.Log.d("MainActivity", "InCallService.endCurrentCall() for reject success: $success")
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "InCallService.endCurrentCall() for reject failed: ${e.message}")
@@ -416,7 +416,7 @@ class MainActivity : FlutterFragmentActivity() {
 
             // Prefer using InCallService when available
             try {
-                success = MyCallService.answerCurrentCallStatic()
+                success = com.example.umar_dailer.services.MyCallService.answerCurrentCall()
                 android.util.Log.d("MainActivity", "InCallService.answerCurrentCall() success: $success")
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "InCallService.answerCurrentCall() failed: ${e.message}")
