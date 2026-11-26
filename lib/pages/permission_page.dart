@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+
+import '../core/services/dialer_role_service.dart';
 
 class PermissionPage extends StatefulWidget {
   const PermissionPage({super.key});
@@ -11,14 +15,25 @@ class PermissionPage extends StatefulWidget {
 
 class _PermissionPageState extends State<PermissionPage>
     with WidgetsBindingObserver {
-  static const MethodChannel _roleChannel = MethodChannel(
-    'app.call_manager/role',
-  );
-
   bool _hasCallPermission = false;
   bool _hasContactsPermission = false;
+  bool _hasNotificationPermission = false;
+  /// Android 14+ "full-screen notifications" toggle. Auto-granted below 14 and for
+  /// most default dialers; this is what actually powers the lockscreen call screen.
+  bool _hasFullScreenIntentPermission = true;
+  bool _hasBackgroundPermission = false;
   bool _isDefaultDialer = false;
   bool _isRequestingDefaultDialer = false;
+  bool _isGrantAllInProgress = false;
+
+  /// Only what the dialer cannot work without. Battery optimisation is excluded: MIUI keeps
+  /// reporting it denied even after the user allows it, which trapped people on this screen.
+  bool get _allRequirementsMet {
+    return _hasCallPermission &&
+        _hasContactsPermission &&
+        _hasNotificationPermission &&
+        _isDefaultDialer;
+  }
 
   @override
   void initState() {
@@ -47,149 +62,373 @@ class _PermissionPageState extends State<PermissionPage>
     await _refreshDefaultDialerStatus();
   }
 
-  // Check existing permissions
   Future<void> _checkPermissions() async {
     final PermissionStatus phoneStatus = await Permission.phone.status;
     final PermissionStatus contactsStatus = await Permission.contacts.status;
+    PermissionStatus? notificationStatus;
+    bool notificationGranted = false;
+    if (Platform.isAndroid) {
+      notificationGranted = await DialerRoleService.hasNotificationPermission();
+      if (!notificationGranted) {
+        notificationStatus = await Permission.notification.status;
+        notificationGranted = notificationStatus.isGranted;
+        debugPrint(
+          'Notification permission status (fallback check): $notificationStatus',
+        );
+      }
+    } else {
+      notificationStatus = await Permission.notification.status;
+      notificationGranted = notificationStatus.isGranted;
+      debugPrint('Notification permission status (check): $notificationStatus');
+    }
+
+    final PermissionStatus batteryStatus = Platform.isAndroid
+        ? await Permission.ignoreBatteryOptimizations.status
+        : PermissionStatus.granted;
+
+    final bool fullScreenIntentGranted =
+        !Platform.isAndroid || await DialerRoleService.hasFullScreenIntentPermission();
 
     debugPrint('Phone permission status (check): $phoneStatus');
     debugPrint('Contacts permission status (check): $contactsStatus');
+    debugPrint('Battery optimization status (check): $batteryStatus');
+    debugPrint('Full-screen intent allowed (check): $fullScreenIntentGranted');
 
     if (!mounted) return;
     setState(() {
       _hasCallPermission = phoneStatus.isGranted;
       _hasContactsPermission = contactsStatus.isGranted;
+      _hasNotificationPermission = notificationGranted;
+      _hasBackgroundPermission = batteryStatus.isGranted;
+      _hasFullScreenIntentPermission = fullScreenIntentGranted;
     });
   }
 
   Future<void> _refreshDefaultDialerStatus() async {
+    final bool isDefault = await DialerRoleService.isDefaultDialer();
+    if (mounted) setState(() => _isDefaultDialer = isDefault);
+  }
+
+  Future<PermissionStatus> _requestPermissionWithFeedback({
+    required Permission permission,
+    required String logLabel,
+    required String permanentlyDeniedMessage,
+    required String deniedMessage,
+    bool showFeedback = true,
+  }) async {
+    PermissionStatus status;
     try {
-      debugPrint('🔄 Refreshing default dialer state...');
-      final bool? isDefault = await _roleChannel.invokeMethod<bool>(
-        'isDefaultDialer',
-      );
-      debugPrint('📱 Is default dialer: $isDefault');
-      if (!mounted) return;
-      setState(() {
-        _isDefaultDialer = isDefault ?? false;
-      });
-    } on PlatformException catch (error) {
-      debugPrint('❌ Default dialer check failed: $error');
-      if (!mounted) return;
-      setState(() {
-        _isDefaultDialer = false;
-      });
+      status = await permission.request();
+    } on PlatformException catch (error, stackTrace) {
+      debugPrint('❌ $logLabel permission request failed: $error');
+      debugPrint('$stackTrace');
+      if (showFeedback && mounted) {
+        _showSnackBar(
+          'Unable to request $logLabel permission. Please enable it from Settings.',
+        );
+      }
+      if (mounted) {
+        await _checkPermissions();
+      }
+      return PermissionStatus.denied;
     }
+
+    debugPrint('$logLabel permission status (request): $status');
+
+    if (!mounted) {
+      return status;
+    }
+
+    if (status.isGranted) {
+      await _checkPermissions();
+      return status;
+    }
+
+    if (!showFeedback) {
+      await _checkPermissions();
+      return status;
+    }
+
+    if (status.isPermanentlyDenied) {
+      if (permanentlyDeniedMessage.isNotEmpty) {
+        _showSnackBar(permanentlyDeniedMessage);
+      }
+      await openAppSettings();
+    } else if (deniedMessage.isNotEmpty) {
+      _showSnackBar(deniedMessage);
+    }
+
+    await _checkPermissions();
+    return status;
+  }
+
+  Future<bool> _ensureNotificationPermission({bool showFeedback = true}) async {
+    if (Platform.isAndroid) {
+      if (_hasNotificationPermission) {
+        return true;
+      }
+
+      await DialerRoleService.requestNotificationPermission();
+      await _checkPermissions();
+      if (_hasNotificationPermission) {
+        return true;
+      }
+
+      if (showFeedback) {
+        _showSnackBar('Notification permission required for call alerts.');
+      }
+      return _hasNotificationPermission;
+    }
+
+    final PermissionStatus status = await Permission.notification.request();
+    debugPrint('Notification permission status (request): $status');
+
+    if (status.isGranted) {
+      await _checkPermissions();
+      return true;
+    }
+
+    if (showFeedback) {
+      if (status.isPermanentlyDenied) {
+        _showSnackBar(
+          'Notification permission permanently denied. Enable it in Settings.',
+        );
+        await openAppSettings();
+      } else {
+        _showSnackBar('Notification permission required for call alerts.');
+      }
+    }
+
+    await _checkPermissions();
+    return false;
+  }
+
+  /// Android 14+: the lock-screen incoming call screen needs the full-screen-intent permission.
+  Future<void> _ensureFullScreenIntentPermission() async {
+    if (!Platform.isAndroid) return;
+    if (await DialerRoleService.hasFullScreenIntentPermission()) return;
+    await DialerRoleService.requestFullScreenIntentPermission();
+  }
+
+  Future<void> _openNotificationSettings() async {
+    try {
+      await openAppSettings();
+    } catch (error, stackTrace) {
+      debugPrint('❌ Failed to open notification settings: $error');
+      debugPrint('$stackTrace');
+    }
+  }
+
+  Future<void> _openDefaultDialerSettings() async {
+    if (!Platform.isAndroid) {
+      await openAppSettings();
+      return;
+    }
+
+    if (!await DialerRoleService.openDefaultDialerSettings()) {
+      await openAppSettings();
+    }
+  }
+
+  List<String> _missingRequirements() {
+    final List<String> missing = <String>[];
+    if (!_hasCallPermission) {
+      missing.add('Phone permission');
+    }
+    if (!_hasContactsPermission) {
+      missing.add('Contacts access');
+    }
+    if (!_hasNotificationPermission) {
+      missing.add('Notifications');
+    }
+    if (Platform.isAndroid) {
+      if (!_hasFullScreenIntentPermission) {
+        missing.add('Full-screen call notifications');
+      }
+      if (!_hasBackgroundPermission) {
+        missing.add('Background activity');
+      }
+    }
+    if (Platform.isAndroid && !_isDefaultDialer) {
+      missing.add('Default phone app role');
+    }
+    return missing;
   }
 
   Future<void> _handlePhonePermissionTap() async {
-    final PermissionStatus status = await Permission.phone.request();
-    debugPrint('Phone permission status (tap): $status');
-
-    if (status.isGranted) {
-      await _checkPermissions();
-      return;
-    }
-
-    if (status.isPermanentlyDenied) {
-      _showSnackBar(
-        'Phone permission permanently denied. Enable it in Settings.',
-      );
-      await openAppSettings();
-    } else {
-      _showSnackBar('Phone permission required to continue.');
-    }
-
-    await _checkPermissions();
+    await _requestPermissionWithFeedback(
+      permission: Permission.phone,
+      logLabel: 'Phone',
+      permanentlyDeniedMessage:
+          'Phone permission permanently denied. Enable it in Settings.',
+      deniedMessage: 'Phone permission required to continue.',
+    );
   }
 
   Future<void> _handleContactsPermissionTap() async {
-    final PermissionStatus status = await Permission.contacts.request();
-    debugPrint('Contacts permission status (tap): $status');
+    await _requestPermissionWithFeedback(
+      permission: Permission.contacts,
+      logLabel: 'Contacts',
+      permanentlyDeniedMessage:
+          'Contacts permission permanently denied. Enable it in Settings.',
+      deniedMessage: 'Contacts permission required to continue.',
+    );
+  }
 
-    if (status.isGranted) {
+  Future<void> _handleNotificationPermissionTap() async {
+    if (Platform.isAndroid && _hasNotificationPermission) {
+      await _openNotificationSettings();
       await _checkPermissions();
       return;
     }
 
-    if (status.isPermanentlyDenied) {
-      _showSnackBar(
-        'Contacts permission permanently denied. Enable it in Settings.',
-      );
-      await openAppSettings();
-    } else {
-      _showSnackBar('Contacts permission required to continue.');
+    final bool granted = await _ensureNotificationPermission();
+    if (!granted && Platform.isAndroid) {
+      await _openNotificationSettings();
+      await _checkPermissions();
     }
+  }
 
+  Future<void> _handleFullScreenIntentTap() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await DialerRoleService.requestFullScreenIntentPermission();
     await _checkPermissions();
   }
 
-  // Request permissions through batch toggle
+  Future<void> _handleBackgroundPermissionTap() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await _requestPermissionWithFeedback(
+      permission: Permission.ignoreBatteryOptimizations,
+      logLabel: 'Battery optimization',
+      permanentlyDeniedMessage:
+          'Disable battery optimizations for Umar Dialer from system settings.',
+      deniedMessage:
+          'Background activity permission is required to keep calls active when the app is closed.',
+    );
+  }
+
   Future<void> _requestPermissions() async {
-    final Map<Permission, PermissionStatus> statuses = await <Permission>[
-      Permission.phone,
-      Permission.contacts,
-    ].request();
-
-    final PermissionStatus phoneStatus =
-        statuses[Permission.phone] ?? PermissionStatus.denied;
-    final PermissionStatus contactsStatus =
-        statuses[Permission.contacts] ?? PermissionStatus.denied;
-
-    debugPrint('Phone permission status (batch): $phoneStatus');
-    debugPrint('Contacts permission status (batch): $contactsStatus');
-
-    if (mounted) {
-      setState(() {
-        _hasCallPermission = phoneStatus.isGranted;
-        _hasContactsPermission = contactsStatus.isGranted;
-      });
+    if (_isGrantAllInProgress) {
+      return;
     }
 
-    if (phoneStatus.isGranted && contactsStatus.isGranted) {
+    if (_allRequirementsMet) {
       if (!mounted) return;
       await Navigator.of(context).pushReplacementNamed('/home');
       return;
     }
 
-    if (phoneStatus.isPermanentlyDenied || contactsStatus.isPermanentlyDenied) {
-      _showSnackBar('Permissions permanently denied. Enable them in Settings.');
-      await openAppSettings();
-    } else {
-      _showSnackBar('Permissions required to continue.');
-    }
+    setState(() => _isGrantAllInProgress = true);
 
-    await _checkPermissions();
+    try {
+      await _requestPermissionWithFeedback(
+        permission: Permission.phone,
+        logLabel: 'Phone',
+        permanentlyDeniedMessage:
+            'Phone permission permanently denied. Enable it in Settings.',
+        deniedMessage: 'Phone permission required to continue.',
+        showFeedback: false,
+      );
+
+      await _requestPermissionWithFeedback(
+        permission: Permission.contacts,
+        logLabel: 'Contacts',
+        permanentlyDeniedMessage:
+            'Contacts permission permanently denied. Enable it in Settings.',
+        deniedMessage: 'Contacts permission required to continue.',
+        showFeedback: false,
+      );
+
+      if (Platform.isAndroid) {
+        await _ensureNotificationPermission(showFeedback: false);
+      } else {
+        await _requestPermissionWithFeedback(
+          permission: Permission.notification,
+          logLabel: 'Notification',
+          permanentlyDeniedMessage:
+              'Notification permission permanently denied. Enable it in Settings.',
+          deniedMessage: 'Notification permission required for call alerts.',
+          showFeedback: false,
+        );
+      }
+
+      if (Platform.isAndroid) {
+        if (!_hasFullScreenIntentPermission) {
+          await _handleFullScreenIntentTap();
+        }
+
+        await _requestPermissionWithFeedback(
+          permission: Permission.ignoreBatteryOptimizations,
+          logLabel: 'Battery optimization',
+          permanentlyDeniedMessage:
+              'Disable battery optimizations for Umar Dialer from system settings.',
+          deniedMessage:
+              'Background activity permission is required to keep calls active when the app is closed.',
+          showFeedback: false,
+        );
+
+        // Full-screen intent (Android 14+) — lets the incoming-call screen wake
+        // the device on the lockscreen.
+        await _ensureFullScreenIntentPermission();
+      }
+
+      await _checkPermissions();
+
+      if (Platform.isAndroid) {
+        if (!_isDefaultDialer) {
+          await _requestSetDefaultDialer(fromUserInteraction: false);
+        } else {
+          await _refreshDefaultDialerStatus();
+        }
+      }
+
+      await _checkPermissions();
+
+      if (_allRequirementsMet) {
+        if (!mounted) return;
+        await Navigator.of(context).pushReplacementNamed('/home');
+        return;
+      }
+
+      final List<String> missing = _missingRequirements();
+      if (missing.isNotEmpty) {
+        _showSnackBar('Enable ${missing.join(', ')} to continue.');
+      } else {
+        _showSnackBar('All permissions must be enabled to continue.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isGrantAllInProgress = false);
+      }
+    }
   }
 
-  Future<void> _requestSetDefaultDialer() async {
+  Future<void> _requestSetDefaultDialer({bool fromUserInteraction = true}) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+
+    if (_isDefaultDialer && fromUserInteraction) {
+      await _openDefaultDialerSettings();
+      await _refreshDefaultDialerStatus();
+      await _checkPermissions();
+      return;
+    }
+
     if (_isRequestingDefaultDialer) return;
 
     setState(() => _isRequestingDefaultDialer = true);
-    try {
-      debugPrint('📞 Requesting default dialer role via MethodChannel...');
-      final bool? result = await _roleChannel.invokeMethod<bool>(
-        'requestDefaultDialer',
-      );
-      debugPrint('✅ Default dialer request result: $result');
-      await Future.delayed(const Duration(seconds: 1));
-      await _refreshDefaultDialerStatus();
-      if (result != true) {
-        _showSnackBar('Please set this app as your default phone app.');
-      }
-    } on PlatformException catch (error, stackTrace) {
-      debugPrint('❌ Default dialer request failed: $error');
-      debugPrint('$stackTrace');
-      _showSnackBar('Error requesting default dialer.');
-    } catch (error, stackTrace) {
-      debugPrint('❌ Unexpected error requesting default dialer: $error');
-      debugPrint('$stackTrace');
-      _showSnackBar('Error requesting default dialer.');
-    } finally {
-      if (mounted) {
-        setState(() => _isRequestingDefaultDialer = false);
-      }
+    final bool granted = await DialerRoleService.requestDefaultDialer();
+    await _refreshDefaultDialerStatus();
+    await _checkPermissions();
+    if (!granted && !_isDefaultDialer) {
+      _showSnackBar('Please set this app as your default phone app.');
     }
+    if (mounted) setState(() => _isRequestingDefaultDialer = false);
   }
 
   void _showSnackBar(String message) {
@@ -209,9 +448,7 @@ class _PermissionPageState extends State<PermissionPage>
     const Color gradientStart = Color(0xFF0A1929);
     const Color gradientEnd = Color(0xFF1C3A5E);
     const Color lightTileColor = Color(0xFFF7F9FC);
-    const Color darkSubtitleColor = Color(0xFF90B0CB);
-    const bool notificationsEnabled =
-        false; // TODO: Wire up notification permission state
+                const Color darkSubtitleColor = Color(0xFF90B0CB);
 
     return Scaffold(
       backgroundColor: gradientStart,
@@ -228,6 +465,7 @@ class _PermissionPageState extends State<PermissionPage>
             builder: (context, constraints) {
               final bool isDarkMode =
                   Theme.of(context).brightness == Brightness.dark;
+              final bool isAndroid = Platform.isAndroid;
 
               return SingleChildScrollView(
                 physics: const BouncingScrollPhysics(),
@@ -252,7 +490,7 @@ class _PermissionPageState extends State<PermissionPage>
                                   BoxShadow(
                                     color: const Color(
                                       0xFF4D9FFF,
-                                    ).withOpacity(0.5),
+                                    ).withValues(alpha: 0.5),
                                     blurRadius: 25,
                                     spreadRadius: 2,
                                   ),
@@ -357,26 +595,57 @@ class _PermissionPageState extends State<PermissionPage>
                                   onToggleTap: _handleContactsPermissionTap,
                                 ),
                                 _buildPermissionTile(
-                                  icon: Icons.notifications,
+                                  icon: Icons.notifications_active,
                                   title: 'Notifications',
                                   subtitle:
-                                      'To alert you about missed calls and important updates.',
-                                  granted: notificationsEnabled,
+                                      'Display call notifications with controls during active calls.',
+                                  granted: _hasNotificationPermission,
                                   isDarkMode: isDarkMode,
                                   lightTileColor: lightTileColor,
+                                  onTap: _handleNotificationPermissionTap,
+                                  onToggleTap: _handleNotificationPermissionTap,
                                 ),
-                                _buildPermissionTile(
-                                  icon: Icons.app_registration,
-                                  title: 'Set as Default',
-                                  subtitle:
-                                      'Make this app your primary call manager.',
-                                  granted: _isDefaultDialer,
-                                  isDarkMode: isDarkMode,
-                                  lightTileColor: lightTileColor,
-                                  onTap: _requestSetDefaultDialer,
-                                  onToggleTap: _requestSetDefaultDialer,
-                                  isProcessing: _isRequestingDefaultDialer,
-                                ),
+                                if (isAndroid)
+                                  _buildPermissionTile(
+                                    icon: Icons.screen_lock_portrait,
+                                    title: 'Lockscreen Access',
+                                    subtitle:
+                                        'Show the incoming call UI over the lockscreen.',
+                                    granted: _hasFullScreenIntentPermission,
+                                    isDarkMode: isDarkMode,
+                                    lightTileColor: lightTileColor,
+                                    onTap: _handleFullScreenIntentTap,
+                                    onToggleTap: _handleFullScreenIntentTap,
+                                  ),
+                                if (isAndroid)
+                                  _buildPermissionTile(
+                                    icon: Icons.battery_charging_full,
+                                    title: 'Background Calls',
+                                    subtitle:
+                                        'Keeps calls connected even when the app is closed.',
+                                    granted: _hasBackgroundPermission,
+                                    isDarkMode: isDarkMode,
+                                    lightTileColor: lightTileColor,
+                                    onTap: _handleBackgroundPermissionTap,
+                                    onToggleTap: _handleBackgroundPermissionTap,
+                                  ),
+                                if (isAndroid)
+                                  _buildPermissionTile(
+                                    icon: Icons.app_registration,
+                                    title: 'Set as Default',
+                                    subtitle:
+                                        'Make this app your primary call manager.',
+                                    granted: _isDefaultDialer,
+                                    isDarkMode: isDarkMode,
+                                    lightTileColor: lightTileColor,
+                                    onTap: () {
+                                      _requestSetDefaultDialer();
+                                    },
+                                    onToggleTap: () {
+                                      _requestSetDefaultDialer();
+                                    },
+                                    isProcessing: _isRequestingDefaultDialer,
+                                  ),
                               ],
                             ),
                           ],
@@ -390,14 +659,15 @@ class _PermissionPageState extends State<PermissionPage>
                               BoxShadow(
                                 color: const Color(
                                   0xFF4D9FFF,
-                                ).withOpacity(0.45),
+                                ).withValues(alpha: 0.45),
                                 blurRadius: 20,
                                 spreadRadius: 2,
                               ),
                             ],
                           ),
                           child: FilledButton(
-                            onPressed: _requestPermissions,
+                            onPressed:
+                                _isGrantAllInProgress ? null : _requestPermissions,
                             style: FilledButton.styleFrom(
                               minimumSize: const Size.fromHeight(56),
                               shape: const StadiumBorder(),
@@ -408,7 +678,29 @@ class _PermissionPageState extends State<PermissionPage>
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-                            child: const Text('Grant All Permissions'),
+                            child: _isGrantAllInProgress
+                                ? Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: const [
+                                      SizedBox(
+                                        height: 20,
+                                        width: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.5,
+                                          valueColor: AlwaysStoppedAnimation<
+                                              Color>(Colors.white),
+                                        ),
+                                      ),
+                                      SizedBox(width: 12),
+                                      Text('Requesting permissions...'),
+                                    ],
+                                  )
+                                : Text(
+                                    _allRequirementsMet
+                                        ? 'Continue'
+                                        : 'Grant All Permissions',
+                                  ),
                           ),
                         ),
                       ],
@@ -435,7 +727,7 @@ class _PermissionPageState extends State<PermissionPage>
     bool isProcessing = false,
   }) {
     final Color tileColor = isDarkMode
-        ? Colors.white.withOpacity(0.1)
+        ? Colors.white.withValues(alpha: 0.1)
         : lightTileColor;
     final Color iconBackground = isDarkMode
         ? const Color(0xFF223749)
@@ -560,12 +852,12 @@ class _PermissionToggle extends StatelessWidget {
           borderRadius: BorderRadius.circular(999),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.15),
+              color: Colors.black.withValues(alpha: 0.15),
               blurRadius: 8,
               offset: const Offset(0, 3),
             ),
             BoxShadow(
-              color: Colors.black.withOpacity(0.06),
+              color: Colors.black.withValues(alpha: 0.06),
               blurRadius: 3,
               offset: const Offset(0, 1),
             ),

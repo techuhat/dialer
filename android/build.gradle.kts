@@ -20,6 +20,15 @@ subprojects {
 }
 
 subprojects {
+    project.configurations.all {
+        resolutionStrategy {
+            force("androidx.activity:activity:1.9.3")
+            force("androidx.activity:activity-ktx:1.9.3")
+        }
+    }
+}
+
+subprojects {
     if (name == "contacts_service") {
         afterEvaluate {
             extensions.findByName("android")?.let { extension ->

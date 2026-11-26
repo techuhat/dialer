@@ -1,266 +1,449 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../core/services/dialer_role_service.dart';
+import '../core/services/sim_service.dart';
+import '../core/services/theme_service.dart';
+import '../core/widgets/page_header.dart';
+
+import 'blocked_numbers_page.dart';
 
 class SettingsPage extends StatefulWidget {
-	const SettingsPage({super.key});
+  const SettingsPage({super.key});
 
-	@override
-	State<SettingsPage> createState() => _SettingsPageState();
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-	static const LinearGradient _backgroundGradient = LinearGradient(
-		begin: Alignment.topLeft,
-		end: Alignment.bottomRight,
-		colors: [Color(0xFF0A1929), Color(0xFF1C3A5E)],
-	);
+  bool _isLoading = true;
+  bool _isDefaultDialer = false;
+  int? _defaultSimSlot;
 
-	bool _isDefaultDialer = true;
-	bool _recordCalls = false;
-	bool _darkMode = true;
+  @override
+  void initState() {
+    super.initState();
+    _loadInitialState();
+    SimService.defaultSimNotifier.addListener(_onSimPreferenceChanged);
+  }
 
-	void _toggleDefaultDialer(bool value) {
-		setState(() => _isDefaultDialer = value);
-	}
+  @override
+  void dispose() {
+    SimService.defaultSimNotifier.removeListener(_onSimPreferenceChanged);
+    super.dispose();
+  }
 
-	void _toggleRecordCalls(bool value) {
-		setState(() => _recordCalls = value);
-	}
+  void _onSimPreferenceChanged() {
+    if (!mounted) return;
+    setState(() {
+      _defaultSimSlot = SimService.defaultSimNotifier.value;
+    });
+  }
 
-	void _toggleDarkMode(bool value) {
-		setState(() => _darkMode = value);
-	}
+  Future<void> _loadInitialState() async {
+    final bool defaultDialer = await DialerRoleService.isDefaultDialer();
+    final int? storedSim = await SimService.getDefaultSimSlot();
+    if (!mounted) return;
+    setState(() {
+      _isDefaultDialer = defaultDialer;
+      _defaultSimSlot = storedSim;
+      _isLoading = false;
+    });
+  }
 
-	void _showAboutDialog() {
-		showDialog<void>(
-			context: context,
-			builder: (BuildContext context) {
-				return AlertDialog(
-					backgroundColor: const Color(0xFF0F2236),
-					shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-					title: const Text(
-						'About Dialer Pro',
-						style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-					),
-					content: const Text(
-						'Dialer Pro is your modern calling companion with powerful contact management, call history insights, and recording tools.',
-						style: TextStyle(color: Color(0xFFB0BEC5), height: 1.5),
-					),
-					actions: [
-						TextButton(
-							onPressed: () => Navigator.of(context).pop(),
-							child: const Text('Close'),
-						),
-					],
-				);
-			},
-		);
-	}
+  Future<void> _toggleDefaultDialer(bool value) async {
+    if (value) {
+      final bool granted = await DialerRoleService.requestDefaultDialer();
+      if (!granted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to set default dialer right now.')),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Default dialer can only be changed from system settings.')),
+        );
+      }
+    }
+    final bool current = await DialerRoleService.isDefaultDialer();
+    if (mounted) {
+      setState(() => _isDefaultDialer = current);
+    }
+  }
 
-	@override
-	Widget build(BuildContext context) {
-		final TextTheme textTheme = Theme.of(context).textTheme;
+  Future<void> _onChangeDefaultSim() async {
+    final result = await SimService.chooseDefaultSim(
+      context,
+      currentDefault: _defaultSimSlot,
+    );
 
-		return Scaffold(
-			backgroundColor: Colors.transparent,
-			body: Container(
-				decoration: const BoxDecoration(gradient: _backgroundGradient),
-				child: SafeArea(
-					child: Column(
-						crossAxisAlignment: CrossAxisAlignment.start,
-						children: [
-							Padding(
-								padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
-								child: Column(
-									crossAxisAlignment: CrossAxisAlignment.start,
-									children: [
-										Text(
-											'Settings',
-											style: textTheme.headlineSmall?.copyWith(
-												color: Colors.white,
-												fontWeight: FontWeight.bold,
-											),
-										),
-										const SizedBox(height: 8),
-										Text(
-											'Personalize your dialer experience and manage preferences',
-											style: textTheme.bodyMedium?.copyWith(
-												color: const Color(0xFF90B0CB),
-												height: 1.4,
-											),
-										),
-									],
-								),
-							),
-							Expanded(
-								child: ListView(
-									padding: const EdgeInsets.fromLTRB(24, 0, 24, 120),
-									children: [
-										_SettingsSwitchTile(
-											title: 'Set as Default Dialer',
-											subtitle: 'Use Dialer Pro for all incoming and outgoing calls',
-											value: _isDefaultDialer,
-											onChanged: _toggleDefaultDialer,
-										),
-										const SizedBox(height: 16),
-										_SettingsSwitchTile(
-											title: 'Record Calls',
-											subtitle: 'Automatically capture and store call recordings securely',
-											value: _recordCalls,
-											onChanged: _toggleRecordCalls,
-										),
-										const SizedBox(height: 16),
-										_SettingsSwitchTile(
-											title: 'Dark Mode',
-											subtitle: 'Keep the experience consistent with deep blue gradients',
-											value: _darkMode,
-											onChanged: _toggleDarkMode,
-										),
-										const SizedBox(height: 24),
-										_SettingsActionTile(
-											title: 'About App',
-											subtitle: 'Version 1.0.0 · Learn more about the product',
-											onTap: _showAboutDialog,
-										),
-									],
-								),
-							),
-						],
-					),
-				),
-			),
-		);
-	}
+    if (result == null) return;
+
+    if (result.alwaysAsk) {
+      await SimService.clearDefaultSim();
+      if (!mounted) return;
+      setState(() => _defaultSimSlot = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Will ask for SIM every time')),
+      );
+      return;
+    }
+
+    if (result.simSlot != null) {
+      await SimService.setDefaultSimSlot(result.simSlot!);
+      if (!mounted) return;
+      setState(() => _defaultSimSlot = result.simSlot);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Default SIM set to SIM ${result.simSlot! + 1}')),
+      );
+    }
+  }
+
+  String _defaultSimSubtitle() {
+    if (_defaultSimSlot == null) return 'Ask every time';
+    return 'Currently SIM ${_defaultSimSlot! + 1}';
+  }
+
+  void _toggleDarkMode(bool value) {
+    context.read<ThemeService>().toggleTheme(value);
+  }
+
+  void _showAboutDialog() {
+    final isDarkMode = context.read<ThemeService>().isDarkMode;
+    final theme = Theme.of(context);
+    
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: isDarkMode 
+              ? const Color(0xFF0F2236)
+              : theme.colorScheme.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Umar Dialer',
+                style: TextStyle(
+                  color: isDarkMode ? Colors.white : theme.colorScheme.onSurface,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 24,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Beta Version 1.0.0',
+                style: TextStyle(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'This app is designed to deliver a faster, cleaner, and more efficient calling experience than the stock dialer. The focus is simple: smooth performance, minimal load, and a user interface that works exactly the way a dialer should — quick, responsive, and dependable.',
+                  style: TextStyle(
+                    color: isDarkMode 
+                        ? const Color(0xFFB0BEC5)
+                        : theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    height: 1.6,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  "Behind every feature is continuous testing and refinement. A big credit goes to Mohammad Taha Sheikh, who has consistently helped by testing every build the moment it's ready. His honest feedback and practical suggestions have helped shape the app into something more stable and more usable with each update.",
+                  style: TextStyle(
+                    color: isDarkMode 
+                        ? const Color(0xFFB0BEC5)
+                        : theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    height: 1.6,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'This project is an ongoing effort to build a smarter dialer for everyday use, and the improvements will continue as user needs evolve.',
+                  style: TextStyle(
+                    color: isDarkMode 
+                        ? const Color(0xFFB0BEC5)
+                        : theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                    height: 1.6,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isDarkMode 
+                        ? Colors.white.withValues(alpha: 0.05)
+                        : theme.colorScheme.primary.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Developed by',
+                        style: TextStyle(
+                          color: isDarkMode 
+                              ? const Color(0xFF90B0CB)
+                              : theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Mohammad Umar Wajid Khan',
+                        style: TextStyle(
+                          color: isDarkMode ? Colors.white : theme.colorScheme.onSurface,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF42A5F5),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              ),
+              child: const Text(
+                'Close',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+              const PageHeader(title: 'Settings'),
+              Expanded(
+                child: _isLoading
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                          valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF42A5F5)),
+                        ),
+                      )
+                    : ListView(
+                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 120),
+                        children: [
+                          _SettingsSwitchTile(
+                            title: 'Set as Default Dialer',
+                            subtitle: 'Handle every incoming and outgoing call with Umar Dialer',
+                            value: _isDefaultDialer,
+                            onChanged: (value) {
+                              _toggleDefaultDialer(value);
+                            },
+                          ),
+                          const SizedBox(height: 24),
+                          _SettingsActionTile(
+                            title: 'Default Call SIM',
+                            subtitle: _defaultSimSubtitle(),
+                            onTap: _onChangeDefaultSim,
+                          ),
+                          const SizedBox(height: 24),
+                          _SettingsSwitchTile(
+                            title: 'Dark Mode',
+                            subtitle: 'Easy on the eyes at 2 a.m.',
+                            value: context.watch<ThemeService>().isDarkMode,
+                            onChanged: _toggleDarkMode,
+                          ),
+                          const SizedBox(height: 24),
+                          _SettingsActionTile(
+                            title: 'Blocked Numbers',
+                            subtitle: 'Numbers that will never ring again',
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (context) => const BlockedNumbersPage()),
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 24),
+                          _SettingsActionTile(
+                            title: 'About App',
+                            subtitle: 'Beta v1.0.0 · Learn more about Umar Dialer',
+                            onTap: _showAboutDialog,
+                          ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        ),
+    );
+  }
 }
 
 class _SettingsSwitchTile extends StatelessWidget {
-	const _SettingsSwitchTile({
-		required this.title,
-		required this.subtitle,
-		required this.value,
-		required this.onChanged,
-	});
+  const _SettingsSwitchTile({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
 
-	final String title;
-	final String subtitle;
-	final bool value;
-	final ValueChanged<bool> onChanged;
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
-	@override
-	Widget build(BuildContext context) {
-		final TextTheme textTheme = Theme.of(context).textTheme;
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    final isDarkMode = context.watch<ThemeService>().isDarkMode;
+    final theme = Theme.of(context);
 
-		return Container(
-			padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-			decoration: BoxDecoration(
-				color: Colors.white.withOpacity(0.08),
-				borderRadius: BorderRadius.circular(20),
-				border: Border.all(color: Colors.white.withOpacity(0.08)),
-				boxShadow: [
-					BoxShadow(
-						color: Colors.black.withOpacity(0.22),
-						blurRadius: 18,
-						offset: const Offset(0, 12),
-					),
-				],
-			),
-			child: Row(
-				children: [
-					Expanded(
-						child: Column(
-							crossAxisAlignment: CrossAxisAlignment.start,
-							children: [
-								Text(
-									title,
-									style: textTheme.titleMedium?.copyWith(
-										color: Colors.white,
-										fontWeight: FontWeight.w700,
-									),
-								),
-								const SizedBox(height: 6),
-								Text(
-									subtitle,
-									style: textTheme.bodySmall?.copyWith(
-										color: const Color(0xFF90B0CB),
-										height: 1.4,
-									),
-								),
-							],
-						),
-					),
-					const SizedBox(width: 12),
-					Switch.adaptive(
-						value: value,
-						onChanged: onChanged,
-						activeColor: Colors.white,
-						activeTrackColor: const Color(0xFF42A5F5),
-						inactiveTrackColor: Colors.white.withOpacity(0.24),
-					),
-				],
-			),
-		);
-	}
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+      decoration: BoxDecoration(
+        color: isDarkMode 
+            ? Colors.white.withValues(alpha: 0.08)
+            : theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDarkMode 
+              ? Colors.white.withValues(alpha: 0.08)
+              : theme.colorScheme.primary.withValues(alpha: 0.2),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: textTheme.titleMedium?.copyWith(
+                    color: isDarkMode ? Colors.white : theme.colorScheme.onSurface,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  subtitle,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: isDarkMode 
+                        ? const Color(0xFF90B0CB)
+                        : theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Switch.adaptive(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: Colors.white,
+            activeTrackColor: const Color(0xFF42A5F5),
+            inactiveTrackColor: Colors.white.withValues(alpha: 0.24),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _SettingsActionTile extends StatelessWidget {
-	const _SettingsActionTile({
-		required this.title,
-		required this.subtitle,
-		required this.onTap,
-	});
+  const _SettingsActionTile({
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
-	final String title;
-	final String subtitle;
-	final VoidCallback onTap;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
 
-	@override
-	Widget build(BuildContext context) {
-		final TextTheme textTheme = Theme.of(context).textTheme;
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    final isDarkMode = context.watch<ThemeService>().isDarkMode;
+    final theme = Theme.of(context);
 
-		return InkWell(
-			borderRadius: BorderRadius.circular(20),
-			onTap: onTap,
-			child: Container(
-				padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-				decoration: BoxDecoration(
-					color: Colors.white.withOpacity(0.08),
-					borderRadius: BorderRadius.circular(20),
-					border: Border.all(color: Colors.white.withOpacity(0.08)),
-					boxShadow: [
-						BoxShadow(
-							color: Colors.black.withOpacity(0.22),
-							blurRadius: 18,
-							offset: const Offset(0, 12),
-						),
-					],
-				),
-				child: Row(
-					children: [
-						Expanded(
-							child: Column(
-								crossAxisAlignment: CrossAxisAlignment.start,
-								children: [
-									Text(
-										title,
-										style: textTheme.titleMedium?.copyWith(
-											color: Colors.white,
-											fontWeight: FontWeight.w700,
-										),
-									),
-									const SizedBox(height: 6),
-									Text(
-										subtitle,
-										style: textTheme.bodySmall?.copyWith(
-											color: const Color(0xFF90B0CB),
-											height: 1.4,
-										),
-									),
-								],
-							),
-						),
-						const Icon(Icons.arrow_forward_ios, color: Colors.white54, size: 18),
-					],
-				),
-			),
-		);
-	}
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+        decoration: BoxDecoration(
+          color: isDarkMode 
+              ? Colors.white.withValues(alpha: 0.08)
+              : theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isDarkMode 
+                ? Colors.white.withValues(alpha: 0.08)
+                : theme.colorScheme.primary.withValues(alpha: 0.2),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: textTheme.titleMedium?.copyWith(
+                      color: isDarkMode ? Colors.white : theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: isDarkMode 
+                          ? const Color(0xFF90B0CB)
+                          : theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios,
+              color: isDarkMode ? Colors.white54 : theme.colorScheme.onSurface.withValues(alpha: 0.5),
+              size: 18,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

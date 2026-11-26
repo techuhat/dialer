@@ -1,87 +1,118 @@
-class CallLogEntry {
-  final String id;
-  final String number;
-  final String? name;
-  final CallType type;
-  final DateTime timestamp;
-  final int duration; // in seconds
-  final bool isRead;
+import 'package:flutter/foundation.dart';
 
+import '../utils/format_utils.dart';
+
+enum CallType { incoming, outgoing, missed, rejected, blocked, voicemail }
+
+/// One row of the system call log.
+@immutable
+class CallLogEntry {
   const CallLogEntry({
     required this.id,
     required this.number,
-    this.name,
     required this.type,
     required this.timestamp,
-    required this.duration,
+    this.name,
+    this.isNetworkName = false,
+    this.duration = 0,
     this.isRead = true,
+    this.simSlot,
+    this.label,
+    this.location,
+    this.isHd = false,
+    this.isWifi = false,
   });
 
-  String get displayName => name ?? number;
-  
-  String get formattedDuration {
-    if (duration == 0) return '0s';
-    
-    final int hours = duration ~/ 3600;
-    final int minutes = (duration % 3600) ~/ 60;
-    final int seconds = duration % 60;
-    
-    if (hours > 0) {
-      return '${hours}h ${minutes}m ${seconds}s';
-    } else if (minutes > 0) {
-      return '${minutes}m ${seconds}s';
-    } else {
-      return '${seconds}s';
-    }
+  factory CallLogEntry.fromNative(Map<Object?, Object?> map) => CallLogEntry(
+        id: map['id'] as String? ?? '',
+        number: map['number'] as String? ?? '',
+        name: (map['name'] as String?)?.trim(),
+        isNetworkName: map['nameSource'] == 'network',
+        type: CallType.values.asNameMap()[map['type']] ?? CallType.incoming,
+        timestamp: DateTime.fromMillisecondsSinceEpoch((map['date'] as num?)?.toInt() ?? 0),
+        duration: (map['duration'] as num?)?.toInt() ?? 0,
+        isRead: map['isRead'] != false,
+        simSlot: (map['simSlot'] as num?)?.toInt(),
+        label: map['label'] as String?,
+        location: map['location'] as String?,
+        isHd: map['hd'] == true,
+        isWifi: map['wifi'] == true,
+      );
+
+  /// Warm snapshot format: the native map with `date` kept as epoch millis.
+  factory CallLogEntry.fromMap(Map<String, dynamic> map) => CallLogEntry.fromNative(map);
+
+  final String id;
+  final String number;
+  final String? name;
+
+  /// The name came from the network (CNAP), not from contacts.
+  final bool isNetworkName;
+  final CallType type;
+  final DateTime timestamp;
+
+  /// Talk time in seconds.
+  final int duration;
+  final bool isRead;
+  final int? simSlot;
+
+  /// The contact's label for this number, e.g. "Mobile".
+  final String? label;
+
+  /// Network-derived place for unsaved numbers, e.g. "Maharashtra, India".
+  final String? location;
+  final bool isHd;
+  final bool isWifi;
+
+  String get displayName {
+    final String? trimmed = name?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) return trimmed;
+    return number.isEmpty ? 'Unknown' : PhoneUtils.formatPhoneNumber(number);
   }
 
-  Map<String, dynamic> toMap() {
-    return {
-      'id': id,
-      'number': number,
-      'name': name,
-      'type': type.index,
-      'timestamp': timestamp.millisecondsSinceEpoch,
-      'duration': duration,
-      'isRead': isRead ? 1 : 0,
-    };
-  }
+  bool get isUnreadMissed => type == CallType.missed && !isRead;
 
-  factory CallLogEntry.fromMap(Map<String, dynamic> map) {
-    return CallLogEntry(
-      id: map['id'] ?? '',
-      number: map['number'] ?? '',
-      name: map['name'],
-      type: CallType.values[map['type'] ?? 0],
-      timestamp: DateTime.fromMillisecondsSinceEpoch(map['timestamp'] ?? 0),
-      duration: map['duration'] ?? 0,
-      isRead: (map['isRead'] ?? 1) == 1,
-    );
-  }
+  Map<String, dynamic> toMap() => <String, dynamic>{
+        'id': id,
+        'number': number,
+        'name': name,
+        'nameSource': isNetworkName ? 'network' : null,
+        'type': type.name,
+        'date': timestamp.millisecondsSinceEpoch,
+        'duration': duration,
+        'isRead': isRead,
+        'simSlot': simSlot,
+        'label': label,
+        'location': location,
+        'hd': isHd,
+        'wifi': isWifi,
+      };
 
-  CallLogEntry copyWith({
-    String? id,
-    String? number,
-    String? name,
-    CallType? type,
-    DateTime? timestamp,
-    int? duration,
-    bool? isRead,
-  }) {
-    return CallLogEntry(
-      id: id ?? this.id,
-      number: number ?? this.number,
-      name: name ?? this.name,
-      type: type ?? this.type,
-      timestamp: timestamp ?? this.timestamp,
-      duration: duration ?? this.duration,
-      isRead: isRead ?? this.isRead,
-    );
-  }
-}
+  CallLogEntry copyWith({String? name, bool? isNetworkName, String? label, bool? isRead}) => CallLogEntry(
+        id: id,
+        number: number,
+        name: name ?? this.name,
+        isNetworkName: isNetworkName ?? this.isNetworkName,
+        type: type,
+        timestamp: timestamp,
+        duration: duration,
+        isRead: isRead ?? this.isRead,
+        simSlot: simSlot,
+        label: label ?? this.label,
+        location: location,
+        isHd: isHd,
+        isWifi: isWifi,
+      );
 
-enum CallType {
-  incoming,
-  outgoing,
-  missed,
+  @override
+  bool operator ==(Object other) =>
+      other is CallLogEntry &&
+      other.id == id &&
+      other.name == name &&
+      other.isRead == isRead &&
+      other.isNetworkName == isNetworkName &&
+      other.label == label;
+
+  @override
+  int get hashCode => Object.hash(id, name, isRead, isNetworkName, label);
 }

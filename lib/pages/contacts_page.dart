@@ -1,10 +1,20 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'dart:async';
 
-import '../core/models/contact.dart' as contact_model;
+import 'package:flutter/material.dart';
+import 'package:share_plus/share_plus.dart';
+
+import '../core/call_launcher.dart';
+import '../core/models/contact.dart';
 import '../core/services/contacts_service.dart';
-import '../core/services/call_service.dart';
+import '../core/theme.dart';
 import '../core/utils/format_utils.dart';
+import '../core/widgets/app_sheet.dart';
+import '../core/widgets/contact_avatar.dart';
+import '../core/widgets/empty_state.dart';
+import '../core/widgets/feedback.dart';
+import '../core/widgets/page_header.dart';
+import 'contact_details_page.dart';
+import 'contact_editor_page.dart';
 
 class ContactsPage extends StatefulWidget {
   const ContactsPage({super.key});
@@ -13,113 +23,209 @@ class ContactsPage extends StatefulWidget {
   State<ContactsPage> createState() => _ContactsPageState();
 }
 
-class _ContactsPageState extends State<ContactsPage> {
-  static const LinearGradient _backgroundGradient = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: [Color(0xFF0A1929), Color(0xFF1C3A5E)],
-  );
+class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClientMixin {
+  static final RegExp _nonDigit = RegExp(r'\D');
+  static final RegExp _letter = RegExp(r'\p{L}', unicode: true);
 
-  List<contact_model.Contact> _contacts = [];
-  List<contact_model.Contact> _filteredContacts = [];
-  bool _isLoading = true;
-  String _searchQuery = '';
-  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _search = TextEditingController();
+  StreamSubscription<List<Contact>>? _subscription;
+  List<Contact> _contacts = ContactsService.getCachedContacts();
+  List<Object> _rows = const <Object>[];
+  bool _favouritesOnly = false;
+  bool _searching = false;
+  bool _loading = true;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    _loadContacts();
-    _searchController.addListener(_filterContacts);
+    _rows = _buildRows();
+    _loading = _contacts.isEmpty;
+    _subscription = ContactsService.contactsStream.listen((List<Contact> contacts) {
+      if (mounted) _update(() => _contacts = contacts);
+    });
+    _load();
   }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _subscription?.cancel();
+    _search.dispose();
     super.dispose();
   }
 
-  Future<void> _loadContacts() async {
+  Future<void> _load({bool force = false}) async {
     try {
-      setState(() => _isLoading = true);
-      final contacts = await ContactsService.getAllContacts();
-      setState(() {
-        _contacts = contacts;
-        _filteredContacts = contacts;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading contacts: $e'),
-            backgroundColor: const Color(0xFFE53935),
-          ),
-        );
-      }
+      final List<Contact> contacts = await ContactsService.getAllContacts(forceRefresh: force, withPhoto: true);
+      if (mounted) _update(() => _contacts = contacts);
+    } catch (error) {
+      if (mounted) showToast(context, "Couldn't load contacts");
+    } finally {
+      if (mounted && _loading) setState(() => _loading = false);
     }
   }
 
-  void _filterContacts() {
-    final query = _searchController.text.toLowerCase();
-    setState(() {
-      _searchQuery = query;
-      if (query.isEmpty) {
-        _filteredContacts = _contacts;
-      } else {
-        _filteredContacts = _contacts.where((contact) {
-          return contact.displayName.toLowerCase().contains(query) ||
-                 contact.phones.any((phone) => phone.number.contains(query));
-        }).toList();
+  void _update(VoidCallback change) => setState(() {
+        change();
+        _loading = false;
+        _rows = _buildRows();
+      });
+
+  /// Letter headers (String) followed by their contacts.
+  List<Object> _buildRows() {
+    final String query = _search.text.trim().toLowerCase();
+    final String digits = query.replaceAll(_nonDigit, '');
+    final List<Object> rows = <Object>[];
+    String? letter;
+    for (final Contact contact in _contacts) {
+      if (_favouritesOnly && !contact.isFavorite) continue;
+      if (query.isNotEmpty &&
+          !contact.displayName.toLowerCase().contains(query) &&
+          !(digits.isNotEmpty && contact.phones.any((PhoneNumber p) => p.number.replaceAll(_nonDigit, '').contains(digits)))) {
+        continue;
       }
-    });
+      final String first = contact.displayName.isEmpty ? '#' : contact.displayName[0].toUpperCase();
+      final String section = _letter.hasMatch(first) ? first : '#';
+      if (section != letter) rows.add(letter = section);
+      rows.add(contact);
+    }
+    return rows;
+  }
+
+  Future<void> _actions(Contact contact) async {
+    final String? number = contact.primaryPhone?.number;
+    final String? choice = await showAppSheet<String>(
+      context,
+      builder: (BuildContext sheetContext) {
+        Widget tile(String id, IconData icon, String label, {Color? color}) => ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+              leading: Icon(icon, color: color),
+              title: Text(label, style: color == null ? null : TextStyle(color: color)),
+              onTap: () => Navigator.pop(sheetContext, id),
+            );
+        return ListView(
+          shrinkWrap: true,
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text(contact.displayName, style: Theme.of(sheetContext).textTheme.titleMedium),
+            ),
+            if (number != null) ...<Widget>[
+              tile('call', Icons.call_outlined, 'Call'),
+              tile('message', Icons.chat_bubble_outline, 'Send message'),
+            ],
+            tile('favourite', contact.isFavorite ? Icons.star_rounded : Icons.star_outline_rounded,
+                contact.isFavorite ? 'Remove from favourites' : 'Add to favourites'),
+            tile('share', Icons.share_outlined, 'Share'),
+            tile('edit', Icons.edit_outlined, 'Edit'),
+            tile('delete', Icons.delete_outline_rounded, 'Delete', color: AppPalette.of(sheetContext).missed),
+            const SizedBox(height: 8),
+          ],
+        );
+      },
+    );
+    if (choice == null || !mounted) return;
+    switch (choice) {
+      case 'call':
+        await CallLauncher.dial(context, number!);
+      case 'message':
+        await CallLauncher.message(context, number!);
+      case 'favourite':
+        await ContactsService.toggleFavorite(contact);
+      case 'share':
+        final String numbers = contact.phones.map((PhoneNumber p) => PhoneUtils.formatPhoneNumber(p.number)).join('\n');
+        await Share.share('${contact.displayName}\n$numbers', subject: contact.displayName);
+      case 'edit':
+        await Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactEditorPage(contact: contact)));
+      case 'delete':
+        final bool delete = await confirmAction(
+          context,
+          title: 'Delete ${contact.displayName}?',
+          message: 'The contact is removed from this phone and its synced accounts.',
+          confirmLabel: 'Delete',
+          destructive: true,
+        );
+        if (!delete || !mounted) return;
+        try {
+          await ContactsService.deleteContact(contact.id);
+        } catch (_) {
+          if (mounted) showToast(context, "Couldn't delete the contact");
+        }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final AppPalette palette = AppPalette.of(context);
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: Container(
-        decoration: const BoxDecoration(gradient: _backgroundGradient),
-        child: SafeArea(
-          child: Column(
-            children: [
-              // Header
-              _buildHeader(),
-              // Search bar
-              _buildSearchBar(),
-              // Content
-              Expanded(
-                child: _isLoading
-                    ? _buildLoadingState()
-                    : _buildContactsList(),
-              ),
-            ],
-          ),
+      floatingActionButton: Padding(
+        padding: const EdgeInsets.only(bottom: 92),
+        child: FloatingActionButton(
+          tooltip: 'New contact',
+          onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ContactEditorPage())),
+          child: const Icon(Icons.person_add_alt_1_rounded),
+        ),
+      ),
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: <Widget>[
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: _searching ? _searchBar(palette) : _header(),
+            ),
+            Expanded(child: _list(palette)),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildHeader() {
+  Widget _header() {
+    return PageHeader(
+      key: const ValueKey<String>('header'),
+      title: _favouritesOnly ? 'Favourites' : 'Contacts',
+      subtitle: _contacts.isEmpty ? null : '${_contacts.length} people',
+      actions: <Widget>[
+        HeaderAction(icon: Icons.search_rounded, tooltip: 'Search', onPressed: () => setState(() => _searching = true)),
+        HeaderAction(
+          icon: _favouritesOnly ? Icons.star_rounded : Icons.star_outline_rounded,
+          tooltip: _favouritesOnly ? 'Show everyone' : 'Show favourites',
+          onPressed: () => _update(() => _favouritesOnly = !_favouritesOnly),
+        ),
+      ],
+    );
+  }
+
+  Widget _searchBar(AppPalette palette) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Contacts',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-            ),
+      key: const ValueKey<String>('search'),
+      padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+      child: Row(
+        children: <Widget>[
+          HeaderAction(
+            icon: Icons.arrow_back_rounded,
+            tooltip: 'Close search',
+            onPressed: () => _update(() {
+              _searching = false;
+              _search.clear();
+            }),
           ),
-          const SizedBox(height: 4),
-          Text(
-            'Quick access to your contacts',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: const Color(0xFF90B0CB),
+          Expanded(
+            child: TextField(
+              controller: _search,
+              autofocus: true,
+              onChanged: (_) => _update(() {}),
+              style: TextStyle(color: palette.text, fontSize: 17),
+              decoration: InputDecoration(
+                hintText: 'Search name or number',
+                hintStyle: TextStyle(color: palette.muted),
+                border: InputBorder.none,
+              ),
             ),
           ),
         ],
@@ -127,453 +233,100 @@ class _ContactsPageState extends State<ContactsPage> {
     );
   }
 
-  Widget _buildSearchBar() {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF42A5F5).withOpacity(0.3)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: TextField(
-        controller: _searchController,
-        style: const TextStyle(
-          color: Colors.black87,
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-        ),
-        cursorColor: const Color(0xFF42A5F5),
-        decoration: InputDecoration(
-          hintText: 'Search contacts...',
-          hintStyle: TextStyle(
-            color: Colors.black.withOpacity(0.4),
-            fontSize: 16,
-          ),
-          prefixIcon: const Icon(Icons.search, color: Color(0xFF42A5F5)),
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-          suffixIcon: _searchQuery.isNotEmpty
-              ? IconButton(
-                  onPressed: () {
-                    _searchController.clear();
-                  },
-                  icon: const Icon(Icons.clear, color: Color(0xFF42A5F5)),
-                )
-              : null,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return const Center(
-      child: CircularProgressIndicator(
-        valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF42A5F5)),
-      ),
-    );
-  }
-
-  Widget _buildContactsList() {
-    if (_filteredContacts.isEmpty) {
-      return _buildEmptyState();
-    }
-
-    return RefreshIndicator(
-      onRefresh: _loadContacts,
-      backgroundColor: const Color(0xFF1C3A5E),
-      color: const Color(0xFF42A5F5),
-      child: ListView.separated(
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 120),
-        itemCount: _filteredContacts.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 16),
-        itemBuilder: (context, index) => _buildContactItem(_filteredContacts[index]),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.contacts_outlined,
-              size: 48,
-              color: Color(0xFF90B0CB),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            _searchQuery.isNotEmpty ? 'No contacts found' : 'No contacts available',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _searchQuery.isNotEmpty 
-                ? 'Try a different search term'
-                : 'Contacts will appear here when available',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: const Color(0xFF90B0CB),
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildContactItem(contact_model.Contact contact) {
-    final primaryPhone = contact.phones.isNotEmpty ? contact.phones.first.number : '';
-    
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.08)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.28),
-            blurRadius: 18,
-            offset: const Offset(0, 12),
-          ),
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () => _showContactDetails(contact),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            child: Row(
-              children: [
-                // Avatar
-                Container(
-                  height: 48,
-                  width: 48,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF42A5F5).withOpacity(0.22),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Center(
-                    child: Text(
-                      _getInitials(contact.displayName),
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                // Contact info
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        contact.displayName,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (primaryPhone.isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          PhoneUtils.formatPhoneNumber(primaryPhone),
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: const Color(0xFFB0BEC5),
-                          ),
-                        ),
-                      ],
-                      if (contact.phones.length > 1) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          '${contact.phones.length} numbers',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: const Color(0xFF90B0CB),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 16),
-                // Call button
-                if (primaryPhone.isNotEmpty)
-                  InkWell(
-                    onTap: () => _makeCall(primaryPhone),
-                    borderRadius: BorderRadius.circular(32),
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFF42A5F5),
-                      ),
-                      child: const Icon(Icons.call, color: Colors.white, size: 22),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  String _getInitials(String name) {
-    final chunks = name.trim().split(RegExp(r'\s+'));
-    if (chunks.isEmpty) return '';
-    if (chunks.length == 1) {
-      return chunks.first.isNotEmpty ? chunks.first.substring(0, 1).toUpperCase() : '';
-    }
-    return (chunks.first.substring(0, 1) + chunks.last.substring(0, 1)).toUpperCase();
-  }
-
-  void _showContactDetails(contact_model.Contact contact) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _ContactDetailsBottomSheet(contact: contact),
-    );
-  }
-
-  Future<void> _makeCall(String number) async {
-    HapticFeedback.selectionClick();
-    try {
-      final success = await CallService.makeCall(number);
-      if (!success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Failed to make call'),
-              backgroundColor: Color(0xFFE53935),
-            ),
-          );
-        }
+  Widget _list(AppPalette palette) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_rows.isEmpty) {
+      if (_search.text.trim().isNotEmpty) {
+        return const EmptyState(emoji: '🔍', title: 'Nobody by that name', message: 'Not even a distant cousin. Try another spelling?');
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: const Color(0xFFE53935),
-          ),
+      if (_favouritesOnly) {
+        return const EmptyState(
+          emoji: '⭐',
+          title: 'No favourites yet',
+          message: 'Long-press a contact to star the special ones. We won’t tell the others.',
         );
       }
+      return const EmptyState(
+        emoji: '📇',
+        title: 'No contacts yet',
+        message: 'Your phonebook is as empty as a Monday inbox. Tap + to add someone.',
+      );
     }
+    return RefreshIndicator(
+      onRefresh: () => _load(force: true),
+      child: ListView.builder(
+        padding: const EdgeInsets.only(bottom: 160),
+        itemCount: _rows.length,
+        itemBuilder: (BuildContext context, int index) {
+          final Object row = _rows[index];
+          if (row is String) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(24, 14, 20, 2),
+              child: Text(row, style: TextStyle(color: palette.accent, fontSize: 14, fontWeight: FontWeight.w700)),
+            );
+          }
+          final Contact contact = row as Contact;
+          return _ContactTile(contact: contact, onLongPress: () => _actions(contact));
+        },
+      ),
+    );
   }
 }
 
-// Contact Details Bottom Sheet
-class _ContactDetailsBottomSheet extends StatelessWidget {
-  final contact_model.Contact contact;
+class _ContactTile extends StatelessWidget {
+  const _ContactTile({required this.contact, required this.onLongPress});
 
-  const _ContactDetailsBottomSheet({required this.contact});
+  final Contact contact;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xFF1C3A5E),
-        borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
-      ),
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Handle
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2),
+    final AppPalette palette = AppPalette.of(context);
+    final String? number = contact.primaryPhone?.number;
+    final int extra = contact.phones.length - 1;
+    return InkWell(
+      onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactDetailsPage(contact: contact))),
+      onLongPress: onLongPress,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 8, 8),
+        child: Row(
+          children: <Widget>[
+            Badge(
+              isLabelVisible: contact.isFavorite,
+              alignment: AlignmentDirectional.bottomEnd,
+              backgroundColor: const Color(0xFFFFB300),
+              smallSize: 12,
+              child: ContactAvatar(name: contact.displayName, photo: contact.bestPhoto, size: 44),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    contact.displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: palette.text, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  if (number != null)
+                    Text(
+                      extra > 0 ? '${PhoneUtils.formatPhoneNumber(number)}  +$extra' : PhoneUtils.formatPhoneNumber(number),
+                      maxLines: 1,
+                      style: TextStyle(color: palette.muted, fontSize: 13.5),
+                    ),
+                ],
               ),
             ),
-          ),
-          const SizedBox(height: 24),
-          
-          // Contact info
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF42A5F5).withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Icon(
-                  Icons.person,
-                  color: const Color(0xFF42A5F5),
-                  size: 40,
-                ),
+            if (number != null)
+              IconButton(
+                tooltip: 'Call ${contact.displayName}',
+                onPressed: () => CallLauncher.dial(context, number),
+                icon: Icon(Icons.call_outlined, color: palette.accent),
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      contact.displayName,
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${contact.phones.length} phone numbers',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: const Color(0xFFB0BEC5),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          
-          const SizedBox(height: 32),
-          
-          // Phone numbers
-          if (contact.phones.isNotEmpty) ...[
-            Text(
-              'Phone Numbers',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 16),
-            ...contact.phones.take(3).map((phone) => _buildPhoneItem(context, phone)),
-            if (contact.phones.length > 3) ...[
-              const SizedBox(height: 8),
-              Text(
-                '+${contact.phones.length - 3} more numbers',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF90B0CB),
-                ),
-              ),
-            ],
           ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPhoneItem(BuildContext context, contact_model.PhoneNumber phone) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  PhoneUtils.formatPhoneNumber(phone.number),
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (phone.label.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    phone.label,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: const Color(0xFF90B0CB),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              _makeCall(phone.number, context);
-            },
-            borderRadius: BorderRadius.circular(20),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF42A5F5),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.call, color: Colors.white, size: 16),
-                  SizedBox(width: 6),
-                  Text(
-                    'Call',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _makeCall(String number, BuildContext context) async {
-    HapticFeedback.selectionClick();
-    try {
-      final success = await CallService.makeCall(number);
-      if (!success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Failed to make call'),
-            backgroundColor: Color(0xFFE53935),
-          ),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: const Color(0xFFE53935),
         ),
-      );
-    }
+      ),
+    );
   }
 }

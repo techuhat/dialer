@@ -1,230 +1,141 @@
 import 'dart:async';
-import 'dart:developer' as developer;
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
+
+import '../call_service.dart';
 import '../models/call_log_entry.dart';
+import '../models/call_stats.dart';
+import '../models/contact.dart';
+import '../utils/format_utils.dart';
 import 'contacts_service.dart';
+import 'platform_channel.dart';
+import 'warm_call_log_store.dart';
 
+/// Recents, read from the system call log (Telecom logs every call, even when this app is closed).
+/// Names are refreshed from contacts; a warm snapshot gives the first frame something to show.
 class CallLogService {
-  static Database? _database;
-  static const String _tableName = 'call_logs';
-  static final StreamController<void> _changeController = StreamController<void>.broadcast();
+  const CallLogService._();
 
-  static Stream<void> get changes => _changeController.stream;
+  static const int _snapshotSize = 100;
 
-  static Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
+  static List<CallLogEntry> _entries = const <CallLogEntry>[];
+  static final StreamController<List<CallLogEntry>> _controller =
+      StreamController<List<CallLogEntry>>.broadcast();
+  static Future<void>? _inFlight;
+  static StreamSubscription<List<Contact>>? _contactChanges;
+  static bool _loaded = false;
+  static Timer? _snapshotTimer;
+
+  static List<CallLogEntry> get entries => _entries;
+
+  static int get unreadMissedCount => _entries.where((CallLogEntry e) => e.isUnreadMissed).length;
+
+  /// Current entries first, then every change.
+  static Stream<List<CallLogEntry>> watch() async* {
+    if (!_loaded) unawaited(refresh());
+    yield _entries;
+    yield* _controller.stream;
   }
 
-  static Future<Database> _initDatabase() async {
-    final String path = join(await getDatabasesPath(), 'call_logs.db');
-    
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: (Database db, int version) async {
-        await db.execute('''
-          CREATE TABLE $_tableName(
-            id TEXT PRIMARY KEY,
-            number TEXT NOT NULL,
-            name TEXT,
-            type INTEGER NOT NULL,
-            timestamp INTEGER NOT NULL,
-            duration INTEGER NOT NULL DEFAULT 0,
-            isRead INTEGER NOT NULL DEFAULT 1
-          )
-        ''');
-      },
-    );
-  }
+  static Future<void> refresh() => _inFlight ??= _load().whenComplete(() => _inFlight = null);
 
-  static Future<void> addCallLog(CallLogEntry entry) async {
-    final db = await database;
-    await db.insert(_tableName, entry.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
-    _notifyChange();
-  }
-
-  static Future<List<CallLogEntry>> getAllCallLogs({
-    CallType? filterType,
-    int? limit,
-    int? offset,
-  }) async {
-    final db = await database;
-    
-    String query = 'SELECT * FROM $_tableName';
-    List<dynamic> whereArgs = [];
-    
-    if (filterType != null) {
-      query += ' WHERE type = ?';
-      whereArgs.add(filterType.index);
+  static Future<void> _load() async {
+    final List<Object?>? rows = await invokeSafe<List<Object?>>(CallService.channel, 'getCallLog');
+    if (rows == null) return;
+    if (!_loaded) {
+      unawaited(_dropLegacyDatabase());
+      _contactChanges ??= ContactsService.contactsStream.listen((_) => refreshNames());
     }
-    
-    query += ' ORDER BY timestamp DESC';
-    
-    if (limit != null) {
-      query += ' LIMIT $limit';
-      if (offset != null) {
-        query += ' OFFSET $offset';
-      }
-    }
-
-    final List<Map<String, dynamic>> maps = await db.rawQuery(query, whereArgs);
-    final callLogs = maps.map((map) => CallLogEntry.fromMap(map)).toList();
-    
-    // Enrich with contact names
-    return await _enrichWithContactNames(callLogs);
+    _loaded = true;
+    _publish(rows.whereType<Map<Object?, Object?>>().map(CallLogEntry.fromNative).map(_withContactName).toList());
   }
 
-  static Future<List<CallLogEntry>> _enrichWithContactNames(List<CallLogEntry> callLogs) async {
+  /// Names from current contacts win over the log's cached name, which goes stale on renames.
+  static CallLogEntry _withContactName(CallLogEntry entry) {
+    final Contact? contact = ContactsService.cachedContactFor(entry.number);
+    if (contact == null) return entry;
+    String? label;
+    for (final PhoneNumber phone in contact.phones) {
+      if (PhoneUtils.isSameNumber(phone.number, entry.number)) label = phone.label;
+    }
+    return entry.copyWith(name: contact.displayName, isNetworkName: false, label: label ?? entry.label);
+  }
+
+  /// Re-applies contact names after the contact list changes.
+  static void refreshNames() {
+    if (_entries.isNotEmpty) _publish(_entries.map(_withContactName).toList());
+  }
+
+  static Future<bool> delete(Iterable<String> ids) async {
+    final Set<String> doomed = ids.toSet();
+    if (doomed.isEmpty) return true;
+    final int? removed =
+        await invokeSafe<int>(CallService.channel, 'deleteCallLog', <String, Object?>{'ids': doomed.toList()});
+    if (removed == null || removed == 0) return false;
+    _publish(_entries.where((CallLogEntry e) => !doomed.contains(e.id)).toList());
+    return true;
+  }
+
+  static Future<bool> clearAll() async {
+    final int? removed = await invokeSafe<int>(CallService.channel, 'clearCallLog');
+    if (removed == null) return false;
+    _publish(const <CallLogEntry>[]);
+    return true;
+  }
+
+  /// Marks missed calls seen and clears the missed-call notification.
+  static Future<void> markMissedRead() async {
+    if (unreadMissedCount == 0) return;
+    await invokeSafe<void>(CallService.channel, 'markMissedRead');
+    _publish(_entries.map((CallLogEntry e) => e.isUnreadMissed ? e.copyWith(isRead: true) : e).toList());
+  }
+
+  static CallStats statistics({required Duration period, DateTime? now}) {
+    final DateTime at = now ?? DateTime.now();
+    return CallStats.from(_entries, since: at.subtract(period), now: at);
+  }
+
+  static Future<void> loadWarmSnapshot(Future<Map<String, dynamic>> Function() readStore) async {
+    if (_loaded) return;
     try {
-      // Check if we have contacts permission
-      if (!await ContactsService.hasPermission()) {
-        return callLogs;
-      }
-
-      final enrichedLogs = <CallLogEntry>[];
-      
-      for (final callLog in callLogs) {
-        try {
-          final contact = await ContactsService.getContactByNumber(callLog.number);
-          if (contact != null && contact.displayName.isNotEmpty) {
-            // Update the call log with the contact name
-            final enrichedLog = CallLogEntry(
-              id: callLog.id,
-              number: callLog.number,
-              name: contact.displayName,
-              type: callLog.type,
-              timestamp: callLog.timestamp,
-              duration: callLog.duration,
-              isRead: callLog.isRead,
-            );
-            enrichedLogs.add(enrichedLog);
-          } else {
-            enrichedLogs.add(callLog);
-          }
-        } catch (e) {
-          developer.log('Error enriching call log ${callLog.id}: $e');
-          enrichedLogs.add(callLog);
-        }
-      }
-      
-      return enrichedLogs;
-    } catch (e) {
-      developer.log('Error enriching call logs with contacts: $e');
-      return callLogs;
+      final Object? raw = (await readStore())['snapshot'];
+      if (raw is! String || raw.isEmpty) return;
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is! List || _loaded) return;
+      _entries = decoded.whereType<Map<String, dynamic>>().map(CallLogEntry.fromMap).toList(growable: false);
+    } catch (error) {
+      debugPrint('Recents snapshot unreadable: $error');
     }
   }
 
-  static Future<List<CallLogEntry>> getRecentCalls({int limit = 50}) async {
-    return await getAllCallLogs(limit: limit);
+  static Future<void> saveWarmSnapshot(Future<void> Function(Map<String, dynamic> data) writeStore) async {
+    if (_entries.isEmpty) return;
+    final String raw = jsonEncode(_entries.take(_snapshotSize).map((CallLogEntry e) => e.toMap()).toList());
+    await writeStore(<String, dynamic>{'snapshot': raw});
   }
 
-  static Future<List<CallLogEntry>> getMissedCalls() async {
-    return await getAllCallLogs(filterType: CallType.missed);
+  static void _publish(List<CallLogEntry> entries) {
+    _entries = List<CallLogEntry>.unmodifiable(entries);
+    if (!_controller.isClosed) _controller.add(_entries);
+    _snapshotTimer?.cancel();
+    _snapshotTimer = Timer(const Duration(seconds: 1), () => saveWarmSnapshot(WarmCallLogStore.write));
   }
 
-  static Future<List<CallLogEntry>> getCallLogsForNumber(String number) async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query(
-      _tableName,
-      where: 'number = ?',
-      whereArgs: [number],
-      orderBy: 'timestamp DESC',
-    );
-    return maps.map((map) => CallLogEntry.fromMap(map)).toList();
-  }
-
-  static Future<int> getUnreadMissedCallsCount() async {
-    final db = await database;
-    final result = await db.rawQuery(
-      'SELECT COUNT(*) as count FROM $_tableName WHERE type = ? AND isRead = 0',
-      [CallType.missed.index],
-    );
-    return result.first['count'] as int;
-  }
-
-  static Future<void> markAllAsRead() async {
-    final db = await database;
-    await db.update(
-      _tableName,
-      {'isRead': 1},
-      where: 'isRead = ?',
-      whereArgs: [0],
-    );
-    _notifyChange();
-  }
-
-  static Future<void> markAsRead(String id) async {
-    final db = await database;
-    await db.update(
-      _tableName,
-      {'isRead': 1},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    _notifyChange();
-  }
-
-  static Future<void> deleteCallLog(String id) async {
-    final db = await database;
-    await db.delete(_tableName, where: 'id = ?', whereArgs: [id]);
-    _notifyChange();
-  }
-
-  static Future<void> clearAllCallLogs() async {
-    final db = await database;
-    await db.delete(_tableName);
-    _notifyChange();
-  }
-
-  static Future<Map<String, int>> getCallStatistics() async {
-    final db = await database;
-    final result = await db.rawQuery('''
-      SELECT 
-        type,
-        COUNT(*) as count,
-        SUM(duration) as totalDuration
-      FROM $_tableName 
-      GROUP BY type
-    ''');
-    
-    Map<String, int> stats = {
-      'totalCalls': 0,
-      'incomingCalls': 0,
-      'outgoingCalls': 0,
-      'missedCalls': 0,
-      'totalDuration': 0,
-    };
-
-    for (final row in result) {
-      final type = CallType.values[row['type'] as int];
-      final count = row['count'] as int;
-      final duration = row['totalDuration'] as int;
-      
-      stats['totalCalls'] = stats['totalCalls']! + count;
-      stats['totalDuration'] = stats['totalDuration']! + duration;
-      
-      switch (type) {
-        case CallType.incoming:
-          stats['incomingCalls'] = count;
-          break;
-        case CallType.outgoing:
-          stats['outgoingCalls'] = count;
-          break;
-        case CallType.missed:
-          stats['missedCalls'] = count;
-          break;
-      }
+  /// Earlier versions kept their own copy of the history; the system log replaces it.
+  static Future<void> _dropLegacyDatabase() async {
+    try {
+      await deleteDatabase(p.join(await getDatabasesPath(), 'call_logs.db'));
+    } catch (_) {
+      // Already gone, or the database plugin is unavailable (tests).
     }
-
-    return stats;
   }
 
-  static void _notifyChange() {
-    if (!_changeController.isClosed) {
-      _changeController.add(null);
-    }
+  @visibleForTesting
+  static void setEntriesForTest(List<CallLogEntry> entries) {
+    _loaded = true;
+    _entries = List<CallLogEntry>.unmodifiable(entries);
   }
 }

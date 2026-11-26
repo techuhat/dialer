@@ -1,9 +1,15 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
+import '../utils/format_utils.dart';
+
 class Contact {
   final String id;
   final String name;
   final List<PhoneNumber> phones;
   final List<Email> emails;
-  final String? photoUrl;
+  final Uint8List? photoBytes;
+  final Uint8List? thumbnailBytes;
   final bool isFavorite;
 
   const Contact({
@@ -11,19 +17,20 @@ class Contact {
     required this.name,
     required this.phones,
     this.emails = const [],
-    this.photoUrl,
+    this.photoBytes,
+    this.thumbnailBytes,
     this.isFavorite = false,
   });
 
+  /// Best available image: full-res photo first, thumbnail as fallback.
+  Uint8List? get bestPhoto => photoBytes ?? thumbnailBytes;
+  
+  /// Returns true if full-resolution photo is available (not just thumbnail).
+  bool get hasFullPhoto => photoBytes != null;
+
   String get displayName => name.trim().isEmpty ? 'Unknown' : name;
   
-  String get initials {
-    final List<String> chunks = displayName.trim().split(RegExp(r'\s+'));
-    if (chunks.length == 1) {
-      return chunks.first.substring(0, 1).toUpperCase();
-    }
-    return (chunks.first.substring(0, 1) + chunks.last.substring(0, 1)).toUpperCase();
-  }
+  String get initials => NameUtils.initials(displayName);
 
   PhoneNumber? get primaryPhone => phones.isNotEmpty ? phones.first : null;
   String get primaryPhoneNumber => primaryPhone?.number ?? '';
@@ -34,7 +41,8 @@ class Contact {
       'name': name,
       'phones': phones.map((e) => e.toMap()).toList(),
       'emails': emails.map((e) => e.toMap()).toList(),
-      'photoUrl': photoUrl,
+      'photoBytes': photoBytes != null ? base64Encode(photoBytes!) : null,
+      'thumbnailBytes': thumbnailBytes != null ? base64Encode(thumbnailBytes!) : null,
       'isFavorite': isFavorite ? 1 : 0,
     };
   }
@@ -49,7 +57,12 @@ class Contact {
       emails: (map['emails'] as List<dynamic>?)
           ?.map((e) => Email.fromMap(e as Map<String, dynamic>))
           .toList() ?? [],
-      photoUrl: map['photoUrl'],
+      photoBytes: map['photoBytes'] != null
+          ? base64Decode(map['photoBytes'] as String)
+          : null,
+      thumbnailBytes: map['thumbnailBytes'] != null
+          ? base64Decode(map['thumbnailBytes'] as String)
+          : null,
       isFavorite: (map['isFavorite'] ?? 0) == 1,
     );
   }
@@ -59,7 +72,8 @@ class Contact {
     String? name,
     List<PhoneNumber>? phones,
     List<Email>? emails,
-    String? photoUrl,
+    Uint8List? photoBytes,
+    Uint8List? thumbnailBytes,
     bool? isFavorite,
   }) {
     return Contact(
@@ -67,7 +81,8 @@ class Contact {
       name: name ?? this.name,
       phones: phones ?? this.phones,
       emails: emails ?? this.emails,
-      photoUrl: photoUrl ?? this.photoUrl,
+      photoBytes: photoBytes ?? this.photoBytes,
+      thumbnailBytes: thumbnailBytes ?? this.thumbnailBytes,
       isFavorite: isFavorite ?? this.isFavorite,
     );
   }
