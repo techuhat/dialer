@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:ui' show PathMetric;
 
 import 'package:flutter/material.dart';
@@ -6,14 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../theme.dart';
 import 'feedback.dart';
-
-class NavDestination {
-  const NavDestination({required this.icon, required this.selectedIcon, required this.label});
-
-  final IconData icon;
-  final IconData selectedIcon;
-  final String label;
-}
+import 'nav_parts.dart';
 
 /// Bottom bar with a raised rotary-dial keypad button in a cradle, and a hand-drawn squiggle
 /// under the selected tab. The middle destination is the dial.
@@ -36,9 +28,6 @@ class DialerNavBar extends StatelessWidget {
 
   /// Destination index → count shown as a red badge (e.g. unread missed calls).
   final Map<int, int> badges;
-
-  /// Space a page must keep clear at the bottom (bar, raised dial and gesture inset).
-  static double clearance(BuildContext context) => _lift + barHeight + MediaQuery.paddingOf(context).bottom;
 
   void _select(int index) {
     if (index == selectedIndex) return;
@@ -117,6 +106,7 @@ class _NavTab extends StatelessWidget {
       selected: selected,
       button: true,
       label: badge > 0 ? '${destination.label}, $badge new' : destination.label,
+      onTap: onTap,
       excludeSemantics: true,
       child: InkResponse(
         onTap: onTap,
@@ -235,7 +225,7 @@ class _SquigglePainter extends CustomPainter {
   bool shouldRepaint(_SquigglePainter old) => old.progress != progress || old.color != color;
 }
 
-/// Keypad button drawn as an old rotary dial; it turns like one when tapped.
+/// Keypad button drawn as an old rotary dial; it winds like one when tapped.
 class _RotaryDialButton extends StatefulWidget {
   const _RotaryDialButton({required this.size, required this.selected, required this.label, required this.onTap});
 
@@ -258,7 +248,7 @@ class _RotaryDialButtonState extends State<_RotaryDialButton> with SingleTickerP
     super.dispose();
   }
 
-  void _rotate(double turns) {
+  void _wind(double turns) {
     _turn = TweenSequence<double>(<TweenSequenceItem<double>>[
       TweenSequenceItem<double>(tween: Tween<double>(begin: 0, end: turns).chain(CurveTween(curve: Curves.easeOut)), weight: 45),
       TweenSequenceItem<double>(tween: Tween<double>(begin: turns, end: 0).chain(CurveTween(curve: Curves.elasticOut)), weight: 55),
@@ -268,82 +258,28 @@ class _RotaryDialButtonState extends State<_RotaryDialButton> with SingleTickerP
 
   @override
   Widget build(BuildContext context) {
-    final AppPalette palette = AppPalette.of(context);
     return Semantics(
       button: true,
       selected: widget.selected,
       label: widget.label,
       child: GestureDetector(
         onTap: () {
-          _rotate(-0.16);
+          _wind(0.16);
           widget.onTap();
         },
         onLongPress: () {
           HapticFeedback.heavyImpact();
-          _rotate(-1);
-          showToast(context, 'Wheee! Nobody has dialled like this since 1985. Tap to use the keypad.');
+          _wind(1);
+          showToast(context, 'Wheee! Want more of this? Settings → Navigation style → Dial menu.');
         },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 250),
-          width: widget.size,
-          height: widget.size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: <Color>[Color(0xFF4FA8F5), Color(0xFF1E6FD9)],
-            ),
-            boxShadow: <BoxShadow>[
-              BoxShadow(
-                color: palette.accent.withValues(alpha: widget.selected ? 0.55 : 0.3),
-                blurRadius: widget.selected ? 18 : 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: AnimatedBuilder(
-            animation: _spin,
-            builder: (BuildContext context, Widget? child) =>
-                Transform.rotate(angle: _turn.value * 2 * math.pi, child: child),
-            child: CustomPaint(painter: _DialFacePainter()),
-          ),
+        child: AnimatedBuilder(
+          animation: _spin,
+          builder: (BuildContext context, _) =>
+              RotaryDialFace(size: widget.size, turns: _turn.value, glow: widget.selected),
         ),
       ),
     );
   }
-}
-
-class _DialFacePainter extends CustomPainter {
-  static const int _holes = 10;
-  static const double _sweep = 1.65 * math.pi;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final Offset center = size.center(Offset.zero);
-    final double radius = size.width / 2;
-    final Paint hole = Paint()..color = Colors.white.withValues(alpha: 0.9);
-    final double ring = radius * 0.64;
-    for (int i = 0; i < _holes; i++) {
-      final double angle = -math.pi / 2 + 0.35 + _sweep * i / (_holes - 1);
-      canvas.drawCircle(center + Offset(math.cos(angle), math.sin(angle)) * ring, radius * 0.115, hole);
-    }
-    canvas.drawCircle(center, radius * 0.26, Paint()..color = Colors.white.withValues(alpha: 0.22));
-    canvas.drawCircle(center, radius * 0.09, Paint()..color = Colors.white);
-    final Offset stopStart = center + Offset(math.cos(0.55), math.sin(0.55)) * radius * 0.82;
-    final Offset stopEnd = center + Offset(math.cos(0.55), math.sin(0.55)) * radius * 0.98;
-    canvas.drawLine(
-      stopStart,
-      stopEnd,
-      Paint()
-        ..color = Colors.white
-        ..strokeWidth = 3
-        ..strokeCap = StrokeCap.round,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_DialFacePainter oldDelegate) => false;
 }
 
 /// The bar shape: rounded top corners and a soft cradle under the dial.

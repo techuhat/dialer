@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/services/dialer_role_service.dart';
+import '../core/services/nav_style_service.dart';
 import '../core/services/sim_service.dart';
 import '../core/services/theme_service.dart';
+import '../core/theme.dart';
+import '../core/widgets/app_sheet.dart';
+import '../core/widgets/nav_parts.dart';
 import '../core/widgets/page_header.dart';
 
 import 'blocked_numbers_page.dart';
@@ -107,6 +111,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _toggleDarkMode(bool value) {
     context.read<ThemeService>().toggleTheme(value);
+  }
+
+  Future<void> _chooseNavStyle() async {
+    final NavStyleService navigation = context.read<NavStyleService>();
+    final NavStyle? picked = await showAppSheet<NavStyle>(
+      context,
+      builder: (BuildContext sheetContext) => _NavStylePicker(current: navigation.style),
+    );
+    if (picked != null) await navigation.setStyle(picked);
   }
 
   void _showAboutDialog() {
@@ -280,6 +293,12 @@ class _SettingsPageState extends State<SettingsPage> {
                           ),
                           const SizedBox(height: 24),
                           _SettingsActionTile(
+                            title: 'Navigation style',
+                            subtitle: context.watch<NavStyleService>().style.title,
+                            onTap: _chooseNavStyle,
+                          ),
+                          const SizedBox(height: 24),
+                          _SettingsActionTile(
                             title: 'Blocked Numbers',
                             subtitle: 'Numbers that will never ring again',
                             onTap: () {
@@ -443,6 +462,51 @@ class _SettingsActionTile extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _NavStylePicker extends StatelessWidget {
+  const _NavStylePicker({required this.current});
+
+  final NavStyle current;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette palette = AppPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Text(
+              'Navigation style',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ),
+          for (final NavStyle style in NavStyle.values)
+            ListTile(
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              selected: style == current,
+              leading: SizedBox.square(
+                dimension: 40,
+                child: Center(
+                  child: style == NavStyle.dial
+                      ? const RotaryDialFace(size: 36)
+                      : Icon(Icons.call_to_action_outlined, size: 32, color: palette.accent),
+                ),
+              ),
+              title: Text(style.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(style.description),
+              trailing: style == current ? Icon(Icons.check_circle, color: palette.accent) : null,
+              onTap: () => Navigator.pop(context, style),
+            ),
+        ],
       ),
     );
   }

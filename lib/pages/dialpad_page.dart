@@ -5,7 +5,6 @@ import '../core/services/dial_intent_service.dart';
 import '../core/services/theme_service.dart';
 import '../core/utils/format_utils.dart';
 import '../core/utils/keypad_feedback.dart';
-import '../core/widgets/dialer_nav_bar.dart';
 import '../core/widgets/keypad.dart';
 import '../core/widgets/page_header.dart';
 import 'contact_editor_page.dart';
@@ -289,7 +288,9 @@ class _DialpadPageState extends State<DialpadPage> {
                 ),
               ),
               Padding(
-                padding: EdgeInsets.fromLTRB(24, 8, 24, DialerNavBar.clearance(context) + 8),
+                // Inside HomePage's Scaffold (extendBody) the bottom padding already covers
+                // whichever navigation is showing, plus the gesture inset.
+                padding: EdgeInsets.fromLTRB(24, 8, 24, MediaQuery.paddingOf(context).bottom + 8),
                 child: FilledButton.icon(
                   onPressed: _input.isEmpty ? null : _onCallPressed,
                   icon: const Icon(Icons.call, size: 22),

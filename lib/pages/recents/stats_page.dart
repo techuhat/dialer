@@ -254,13 +254,15 @@ class _DayBarsState extends State<_DayBars> {
                 final DateTime day = today.subtract(Duration(days: counts.length - 1 - i));
                 final bool labelled =
                     _selected == i || (_selected == null && (i == counts.length - 1 || (counts[i] == max && max > 0)));
+                void select() => setState(() => _selected = _selected == i ? null : i);
                 return Semantics(
                   label: '${DateFormat('EEEE').format(day)}: ${counts[i]} calls',
                   button: true,
+                  onTap: select,
                   excludeSemantics: true,
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: () => setState(() => _selected = _selected == i ? null : i),
+                    onTap: select,
                     child: Column(
                       children: <Widget>[
                         SizedBox(

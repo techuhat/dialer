@@ -6,10 +6,13 @@ import 'package:provider/provider.dart';
 import '../core/models/call_log_entry.dart';
 import '../core/services/call_log_service.dart';
 import '../core/services/dial_intent_service.dart';
+import '../core/services/nav_style_service.dart';
 import '../core/services/theme_service.dart';
 import '../core/services/wallpaper_service.dart';
 import '../core/theme.dart';
+import '../core/widgets/dial_menu.dart';
 import '../core/widgets/dialer_nav_bar.dart';
+import '../core/widgets/nav_parts.dart';
 import 'contacts_page.dart';
 import 'dialpad_page.dart';
 import 'notes_page.dart';
@@ -100,6 +103,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final bool isDark = context.watch<ThemeService>().isDarkMode;
     final WallpaperService wallpaper = context.watch<WallpaperService>();
     final bool showWallpaper = wallpaper.isActive && wallpaper.wallpaperFile != null;
+    final bool dialMenu = context.watch<NavStyleService>().style == NavStyle.dial;
+    final Map<int, int> badges = <int, int>{_recentsTab: _unreadMissed};
     return Stack(
       children: <Widget>[
         Positioned.fill(
@@ -119,13 +124,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           backgroundColor: Colors.transparent,
           extendBody: true,
           body: IndexedStack(index: _index, children: _pages),
-          bottomNavigationBar: DialerNavBar(
-            destinations: _destinations,
-            selectedIndex: _index,
-            onSelected: _select,
-            badges: <int, int>{_recentsTab: _unreadMissed},
-          ),
+          // With the dial menu the bar slot only reserves room, so pages and snack bars keep clear of the dial.
+          bottomNavigationBar: dialMenu
+              ? SizedBox(height: DialMenu.clearance(context))
+              : DialerNavBar(destinations: _destinations, selectedIndex: _index, onSelected: _select, badges: badges),
         ),
+        if (dialMenu)
+          Positioned.fill(
+            child: DialMenu(destinations: _destinations, selectedIndex: _index, onSelected: _select, badges: badges),
+          ),
       ],
     );
   }

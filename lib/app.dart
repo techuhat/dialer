@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'core/call_router.dart';
 import 'core/services/call_log_service.dart';
+import 'core/services/nav_style_service.dart';
 import 'core/services/theme_service.dart';
 import 'core/services/wallpaper_service.dart';
 import 'core/theme.dart';
@@ -34,6 +35,8 @@ class _MyAppState extends State<MyApp> {
       providers: [
         ChangeNotifierProvider(create: (_) => ThemeService()),
         ChangeNotifierProvider(create: (_) => WallpaperService()),
+        // Not lazy: the saved style must be loaded before HomePage's first frame.
+        ChangeNotifierProvider(create: (_) => NavStyleService(), lazy: false),
       ],
       child: Consumer<ThemeService>(
         builder: (BuildContext context, ThemeService theme, Widget? child) => MaterialApp(

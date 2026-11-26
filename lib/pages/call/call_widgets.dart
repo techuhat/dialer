@@ -339,23 +339,25 @@ class CallControlButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool enabled = onPressed != null;
+    final VoidCallback? press = onPressed;
+    final VoidCallback? tap = press == null
+        ? null
+        : () {
+            HapticFeedback.selectionClick();
+            press();
+          };
     return Semantics(
       button: true,
       toggled: active,
-      enabled: enabled,
+      enabled: tap != null,
       label: label,
+      onTap: tap,
       excludeSemantics: true,
       child: Opacity(
-        opacity: enabled ? 1 : 0.38,
+        opacity: tap != null ? 1 : 0.38,
         child: InkWell(
           borderRadius: BorderRadius.circular(20),
-          onTap: enabled
-              ? () {
-                  HapticFeedback.selectionClick();
-                  onPressed!();
-                }
-              : null,
+          onTap: tap,
           child: SizedBox(
             width: 84,
             child: Padding(
@@ -402,6 +404,7 @@ class RoundCallButton extends StatelessWidget {
     required this.color,
     required this.onPressed,
     this.label,
+    this.semanticLabel,
     this.size = 72,
     super.key,
   });
@@ -409,7 +412,12 @@ class RoundCallButton extends StatelessWidget {
   final IconData icon;
   final Color color;
   final VoidCallback? onPressed;
+
+  /// Caption shown under the button.
   final String? label;
+
+  /// What TalkBack says when there is no caption.
+  final String? semanticLabel;
   final double size;
 
   @override
@@ -426,8 +434,10 @@ class RoundCallButton extends StatelessWidget {
     );
     return Semantics(
       button: true,
-      label: label,
-      excludeSemantics: label != null,
+      enabled: onPressed != null,
+      label: label ?? semanticLabel,
+      onTap: onPressed,
+      excludeSemantics: true,
       child: label == null
           ? button
           : Column(

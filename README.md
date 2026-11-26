@@ -18,10 +18,14 @@ Android default-dialer app: Flutter UI on top of a Kotlin `InCallService`.
 | Notifications | `notification/` (CallStyle incoming + ongoing) | — |
 | Recents, blocking | `history/` (system call log, system block list) | `core/services/call_log_service.dart`, `pages/recents/` |
 | Screens | — | `pages/call/`, `pages/` |
+| Navigation | — | `core/widgets/dialer_nav_bar.dart` (classic tabs), `core/widgets/dial_menu.dart` (dial menu) |
 
 Recents come from the system call log, so calls made while the app was closed are included.
 Blocked numbers live in the system block list and never ring. Unsaved callers show the name the
 network sends (CNAP) where the operator provides it.
+
+Settings → Navigation style switches between the classic tabs and the dial menu. Pages inside
+`HomePage` keep clear of either by reading the Scaffold's bottom padding, not a fixed height.
 
 ## Build and check
 

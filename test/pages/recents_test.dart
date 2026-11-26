@@ -5,6 +5,7 @@ import 'package:umar_dailer/core/call_service.dart';
 import 'package:umar_dailer/core/models/call_log_entry.dart';
 import 'package:umar_dailer/core/services/call_log_service.dart';
 import 'package:umar_dailer/core/widgets/dialer_nav_bar.dart';
+import 'package:umar_dailer/core/widgets/nav_parts.dart';
 import 'package:umar_dailer/pages/recents/recent_widgets.dart';
 import 'package:umar_dailer/pages/recents/recents_page.dart';
 import 'package:umar_dailer/pages/recents/stats_page.dart';
@@ -142,6 +143,10 @@ void main() {
       await tester.pump();
 
       expect(find.text('3'), findsOneWidget);
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Recents, 3 new')),
+        isSemantics(isButton: true, isSelected: true, hasTapAction: true),
+      );
       await tester.tap(find.text('Notes'));
       expect(selected, 3);
       await tester.tap(find.bySemanticsLabel('Keypad'));

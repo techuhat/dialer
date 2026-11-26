@@ -103,6 +103,8 @@ class _KeypadButton extends StatelessWidget {
     return Semantics(
       button: true,
       label: keyData.digit,
+      onTap: onTap,
+      onLongPress: onLongPress,
       excludeSemantics: true,
       child: Material(
         color: style.fill,

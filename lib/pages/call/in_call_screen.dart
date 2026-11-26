@@ -243,6 +243,7 @@ class _InCallScreenState extends State<InCallScreen> {
           RoundCallButton(
             icon: Icons.call_end_rounded,
             color: CallColors.decline,
+            semanticLabel: 'End call',
             onPressed: ended == null ? _endCall : null,
           ),
         ],
@@ -355,7 +356,12 @@ class _InCallScreenState extends State<InCallScreen> {
                 child: const Text('Hide keypad', style: TextStyle(fontSize: 15)),
               ),
               const SizedBox(height: 12),
-              RoundCallButton(icon: Icons.call_end_rounded, color: CallColors.decline, onPressed: _endCall),
+              RoundCallButton(
+                icon: Icons.call_end_rounded,
+                color: CallColors.decline,
+                semanticLabel: 'End call',
+                onPressed: _endCall,
+              ),
             ],
           ),
         ),

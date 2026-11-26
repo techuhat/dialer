@@ -105,6 +105,19 @@ void main() {
       await unmount(tester);
     });
 
+    testWidgets('TalkBack can use the controls and end the call', (WidgetTester tester) async {
+      show(<Map<String, Object?>>[_call('c1', 'active')]);
+      await pumpScreen(tester, const InCallScreen());
+
+      expect(tester.getSemantics(find.bySemanticsLabel('Mute')), isSemantics(isButton: true, hasTapAction: true));
+      expect(tester.getSemantics(find.bySemanticsLabel('End call')), isSemantics(isButton: true, hasTapAction: true));
+      tester.semantics.tap(find.semantics.byLabel('End call'));
+      await tester.pump();
+
+      expect(commands.map((MethodCall c) => c.method), contains('end'));
+      await unmount(tester);
+    });
+
     testWidgets('outgoing call reads "Calling…"', (WidgetTester tester) async {
       show(<Map<String, Object?>>[_call('c1', 'dialing')]);
       await pumpScreen(tester, const InCallScreen());
