@@ -1,14 +1,17 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../core/models/contact.dart';
 import '../core/models/contact_photo_settings.dart';
-import '../core/widgets/photo_backdrop.dart';
+import '../core/services/caller_details.dart';
+import 'call/call_widgets.dart';
+import 'call/caller_backdrop.dart';
 
 /// Full-screen preview page where the user can configure how their contact
-/// photo will appear on the call screen.
+/// photo will appear on the call screen. It draws the call screen's own
+/// [CallerBackdrop] and [CallerHeader], so the preview is what a call shows.
 ///
 /// Returns [ContactPhotoSettings] via `Navigator.pop(context, settings)` on
 /// confirm, or `null` on cancel.
@@ -36,26 +39,36 @@ class _ContactPhotoPreviewPageState extends State<ContactPhotoPreviewPage> {
   late double _rotation;
   late String _fitMode;
 
+  /// Null until measured: the style (poster or circle) depends on it.
+  Size? _photoSize;
+  bool _measured = false;
+
   @override
   void initState() {
     super.initState();
     final s = widget.initialSettings;
-    _overlayOpacity = s?.overlayOpacity ?? 0.35;
+    _overlayOpacity = s?.overlayOpacity ?? CallerBackdrop.defaultOverlay;
     _rotation = s?.rotation ?? 0;
     _fitMode = s?.fitMode ?? PhotoFitMode.cover;
+    PhotoStyle.measure(widget.photoBytes).then((Size? size) {
+      if (mounted) {
+        setState(() {
+          _photoSize = size;
+          _measured = true;
+        });
+      }
+    });
   }
 
-  BoxFit _boxFit(String mode) => PhotoBackdrop.boxFit(mode);
-
-  void _confirm() {
-    Navigator.of(context).pop(
-      ContactPhotoSettings(
+  ContactPhotoSettings get _settings => ContactPhotoSettings(
         contactId: widget.contactId,
         overlayOpacity: _overlayOpacity,
         rotation: _rotation,
         fitMode: _fitMode,
-      ),
-    );
+      );
+
+  void _confirm() {
+    Navigator.of(context).pop(_settings);
   }
 
   void _cancel() {
@@ -64,38 +77,38 @@ class _ContactPhotoPreviewPageState extends State<ContactPhotoPreviewPage> {
 
   @override
   Widget build(BuildContext context) {
+    final String name = widget.contactName ?? 'Contact name';
+    final CallerDetails details = CallerDetails(
+      contact: Contact(id: widget.contactId, name: name, phones: const <PhoneNumber>[], photoBytes: widget.photoBytes),
+      photoSettings: _settings,
+      photoSize: _photoSize,
+    );
+    final bool poster = details.photoStyle == PhotoStyle.poster;
     return Scaffold(
-      backgroundColor: const Color(0xFF0A1929),
+      backgroundColor: CallColors.top,
       body: Stack(
         fit: StackFit.expand,
         children: <Widget>[
-          Transform.rotate(
-            angle: _rotation * math.pi / 180,
-            child: Image.memory(
-              widget.photoBytes,
-              fit: _boxFit(_fitMode),
-              width: double.infinity,
-              height: double.infinity,
-              filterQuality: FilterQuality.high,
-              gaplessPlayback: true,
-            ),
-          ),
-
-          Container(color: Colors.black.withValues(alpha: _overlayOpacity)),
-
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              child: Column(
-                children: <Widget>[
-                  const Spacer(),
-                  _buildCallerInfo(),
-                  const Spacer(flex: 2),
-                ],
+          if (_measured) ...<Widget>[
+            CallerBackdrop(details: details),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
+                child: Align(
+                  alignment: poster ? Alignment.topCenter : const Alignment(0, -0.55),
+                  child: CallerHeader(
+                    name: name,
+                    details: details,
+                    avatarSize: 104,
+                    status: const Text(
+                      '00:00',
+                      style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
-
+          ],
           Positioned(
             left: 0,
             right: 0,
@@ -104,44 +117,6 @@ class _ContactPhotoPreviewPageState extends State<ContactPhotoPreviewPage> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildCallerInfo() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        Container(
-          width: 80,
-          height: 80,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white24, width: 2),
-            image: DecorationImage(
-              image: MemoryImage(widget.photoBytes),
-              fit: BoxFit.cover,
-              filterQuality: FilterQuality.high,
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          widget.contactName ?? 'Contact Name',
-          style: const TextStyle(
-            fontSize: 26,
-            fontWeight: FontWeight.w700,
-            color: Colors.white,
-          ),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          '00:00',
-          style: TextStyle(
-            fontSize: 16,
-            color: Colors.white60,
-          ),
-        ),
-      ],
     );
   }
 

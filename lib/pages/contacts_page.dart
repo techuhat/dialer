@@ -8,9 +8,11 @@ import '../core/models/contact.dart';
 import '../core/services/contacts_service.dart';
 import '../core/theme.dart';
 import '../core/utils/format_utils.dart';
+import '../core/widgets/add_contact_icon.dart';
 import '../core/widgets/app_sheet.dart';
 import '../core/widgets/contact_avatar.dart';
 import '../core/widgets/empty_state.dart';
+import '../core/widgets/fast_scroller.dart';
 import '../core/widgets/feedback.dart';
 import '../core/widgets/page_header.dart';
 import 'contact_details_page.dart';
@@ -24,10 +26,10 @@ class ContactsPage extends StatefulWidget {
 }
 
 class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClientMixin {
-  static final RegExp _nonDigit = RegExp(r'\D');
   static final RegExp _letter = RegExp(r'\p{L}', unicode: true);
 
   final TextEditingController _search = TextEditingController();
+  final ScrollController _scroll = ScrollController();
   StreamSubscription<List<Contact>>? _subscription;
   List<Contact> _contacts = ContactsService.getCachedContacts();
   List<Object> _rows = const <Object>[];
@@ -52,6 +54,7 @@ class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClie
   @override
   void dispose() {
     _subscription?.cancel();
+    _scroll.dispose();
     _search.dispose();
     super.dispose();
   }
@@ -76,16 +79,11 @@ class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClie
   /// Letter headers (String) followed by their contacts.
   List<Object> _buildRows() {
     final String query = _search.text.trim().toLowerCase();
-    final String digits = query.replaceAll(_nonDigit, '');
     final List<Object> rows = <Object>[];
     String? letter;
     for (final Contact contact in _contacts) {
       if (_favouritesOnly && !contact.isFavorite) continue;
-      if (query.isNotEmpty &&
-          !contact.displayName.toLowerCase().contains(query) &&
-          !(digits.isNotEmpty && contact.phones.any((PhoneNumber p) => p.number.replaceAll(_nonDigit, '').contains(digits)))) {
-        continue;
-      }
+      if (!contact.matches(query)) continue;
       final String first = contact.displayName.isEmpty ? '#' : contact.displayName[0].toUpperCase();
       final String section = _letter.hasMatch(first) ? first : '#';
       if (section != letter) rows.add(letter = section);
@@ -164,10 +162,21 @@ class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClie
       backgroundColor: Colors.transparent,
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: 92),
-        child: FloatingActionButton(
-          tooltip: 'New contact',
-          onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ContactEditorPage())),
-          child: const Icon(Icons.person_add_alt_1_rounded),
+        // A dark shadow reads as a black ring on this background; a soft cyan glow instead.
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: <BoxShadow>[BoxShadow(color: palette.signal.withValues(alpha: 0.3), blurRadius: 18)],
+          ),
+          child: FloatingActionButton(
+            tooltip: 'New contact',
+            elevation: 0,
+            highlightElevation: 0,
+            backgroundColor: palette.bar,
+            shape: CircleBorder(side: BorderSide(color: palette.signal.withValues(alpha: 0.6), width: 1.5)),
+            onPressed: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ContactEditorPage())),
+            child: const AddContactIcon(),
+          ),
         ),
       ),
       body: SafeArea(
@@ -252,22 +261,27 @@ class _ContactsPageState extends State<ContactsPage> with AutomaticKeepAliveClie
         message: 'Your phonebook is as empty as a Monday inbox. Tap + to add someone.',
       );
     }
-    return RefreshIndicator(
-      onRefresh: () => _load(force: true),
-      child: ListView.builder(
-        padding: const EdgeInsets.only(bottom: 160),
-        itemCount: _rows.length,
-        itemBuilder: (BuildContext context, int index) {
-          final Object row = _rows[index];
-          if (row is String) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(24, 14, 20, 2),
-              child: Text(row, style: TextStyle(color: palette.accent, fontSize: 14, fontWeight: FontWeight.w700)),
-            );
-          }
-          final Contact contact = row as Contact;
-          return _ContactTile(contact: contact, onLongPress: () => _actions(contact));
-        },
+    return FastScroller(
+      controller: _scroll,
+      labelAt: (double fraction) => FastScroller.headingAt(_rows, fraction),
+      child: RefreshIndicator(
+        onRefresh: () => _load(force: true),
+        child: ListView.builder(
+          controller: _scroll,
+          padding: const EdgeInsets.only(bottom: 160),
+          itemCount: _rows.length,
+          itemBuilder: (BuildContext context, int index) {
+            final Object row = _rows[index];
+            if (row is String) {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(24, 14, 20, 2),
+                child: Text(row, style: TextStyle(color: palette.accent, fontSize: 14, fontWeight: FontWeight.w700)),
+              );
+            }
+            final Contact contact = row as Contact;
+            return _ContactTile(contact: contact, onLongPress: () => _actions(contact));
+          },
+        ),
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:umar_dailer/core/call_service.dart';
 import 'package:umar_dailer/core/models/call_log_entry.dart';
 import 'package:umar_dailer/core/services/call_log_service.dart';
@@ -40,25 +41,32 @@ void main() {
     });
   });
 
-  test('filters treat declined as incoming and voicemail as missed', () {
-    final CallLogEntry declined = _call('1', '1', CallType.rejected, now);
-    final CallLogEntry voicemail = _call('2', '1', CallType.voicemail, now);
-
-    expect(RecentsFilter.incoming.accepts(declined), isTrue);
-    expect(RecentsFilter.missed.accepts(declined), isFalse);
-    expect(RecentsFilter.missed.accepts(voicemail), isTrue);
-    expect(RecentsFilter.outgoing.accepts(voicemail), isFalse);
+  test('every call type sits under exactly one filter besides All', () {
+    for (final CallType type in CallType.values) {
+      final CallLogEntry call = _call('1', '1', type, now);
+      final Iterable<RecentsFilter> filters =
+          RecentsFilter.values.where((RecentsFilter filter) => filter != RecentsFilter.all && filter.accepts(call));
+      expect(filters, hasLength(1), reason: type.name);
+    }
+    expect(RecentsFilter.declined.accepts(_call('1', '1', CallType.rejected, now)), isTrue);
+    expect(RecentsFilter.incoming.accepts(_call('1', '1', CallType.rejected, now)), isFalse);
+    expect(RecentsFilter.missed.accepts(_call('1', '1', CallType.voicemail, now)), isTrue);
   });
 
-  test('recentTimeLabel shows a time for recent calls and a date for older ones', () {
-    final DateTime ref = DateTime(2026, 11, 26, 18);
-    expect(recentTimeLabel(DateTime(2026, 11, 26, 14, 5), now: ref), '2:05 pm');
-    expect(recentTimeLabel(DateTime(2026, 11, 10, 9), now: ref), 'Tue 10 Nov');
-    expect(recentTimeLabel(DateTime(2024, 3, 1, 9), now: ref), '1 Mar 2024');
+  test('day headings and call times read the way people say them', () {
+    final DateTime thursday = DateTime(2026, 11, 26, 18);
+    expect(recentDayLabel(DateTime(2026, 11, 26, 9), now: thursday), 'Today');
+    expect(recentDayLabel(DateTime(2026, 11, 25, 23), now: thursday), 'Yesterday');
+    expect(recentDayLabel(DateTime(2026, 11, 23, 9), now: thursday), 'Monday');
+    expect(recentDayLabel(DateTime(2026, 11, 10, 9), now: thursday), 'Tue, 10 November');
+    expect(recentDayLabel(DateTime(2024, 3, 1, 9), now: thursday), 'Fri, 1 March 2024');
+    expect(recentTimeLabel(DateTime(2026, 11, 26, 14, 5)), '2:05 pm');
+    expect(recentTimeLabel(DateTime(2026, 11, 26, 0, 30)), '12:30 am');
   });
 
   group('widgets', () {
     setUp(() {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(CallService.channel, (MethodCall call) async => null);
     });
@@ -81,7 +89,7 @@ void main() {
       await pump(tester, const RecentsPage());
 
       expect(find.text('Today'), findsOneWidget);
-      expect(find.text('Older'), findsOneWidget);
+      expect(find.text(recentDayLabel(now.subtract(const Duration(days: 3)))), findsOneWidget);
       expect(find.text('Asha Verma (2)'), findsOneWidget);
       expect(find.text('Ravi'), findsOneWidget);
 
@@ -92,6 +100,50 @@ void main() {
       await tester.tap(find.text('Outgoing'));
       await tester.pump();
       expect(find.text('Ravi'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the call time stays whole next to a long place name', (WidgetTester tester) async {
+      final DateTime today = DateUtils.dateOnly(now);
+      CallLogService.setEntriesForTest(<CallLogEntry>[
+        CallLogEntry(
+          id: '1',
+          number: '+919123456780',
+          type: CallType.incoming,
+          timestamp: today.add(const Duration(hours: 14, minutes: 5)),
+          location: 'Uttar Pradesh East, India',
+        ),
+      ]);
+      await pump(tester, const RecentsPage());
+
+      expect(find.text('2:05 pm'), findsOneWidget);
+      expect(find.text('Uttar Pradesh East, India'), findsOneWidget);
+    });
+
+    testWidgets('scrolling to the end loads older calls', (WidgetTester tester) async {
+      final List<CallLogEntry> older = <CallLogEntry>[
+        for (int i = 0; i < 20; i++)
+          _call('o$i', '9100000${i.toString().padLeft(3, '0')}', CallType.incoming, now.subtract(Duration(days: 40 + i)), name: 'Old $i'),
+      ];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        CallService.channel,
+        (MethodCall call) async => call.method == 'getCallLog'
+            ? <String, Object?>{'rows': older.map((CallLogEntry e) => e.toMap()).toList(), 'more': false}
+            : null,
+      );
+      CallLogService.setEntriesForTest(<CallLogEntry>[
+        for (int i = 0; i < 20; i++)
+          _call('n$i', '9800000${i.toString().padLeft(3, '0')}', CallType.outgoing, now.subtract(Duration(minutes: i)), name: 'New $i'),
+      ], hasMore: true);
+      await pump(tester, const RecentsPage());
+      expect(find.text('Old 0'), findsNothing);
+
+      await tester.scrollUntilVisible(find.text('Old 0'), 400, scrollable: find.byType(Scrollable).last);
+      expect(find.text('Old 0'), findsOneWidget);
+      expect(CallLogService.hasMore, isFalse);
+      await tester.scrollUntilVisible(find.text('Start of your call history'), 400, scrollable: find.byType(Scrollable).last);
+      expect(find.text('Start of your call history'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1)); // the warm snapshot save
       expect(tester.takeException(), isNull);
     });
 

@@ -1,3 +1,42 @@
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+/// How a contact photo is staged on a large surface: the call screens and the contact card.
+enum PhotoStyle {
+  /// No photo: initials in a circle.
+  none,
+
+  /// Too small to fill the screen sharply: shown in the circle, over a blurred wash of itself.
+  ambient,
+
+  /// Sharp enough to fill the screen: the photo is the backdrop and there is no circle.
+  poster;
+
+  /// Shortest side, in pixels, a photo needs to fill a phone screen without looking soft.
+  static const double posterMinSide = 400;
+
+  static PhotoStyle of(Uint8List? photo, ui.Size? size) {
+    if (photo == null) return none;
+    return size != null && size.shortestSide >= posterMinSide ? poster : ambient;
+  }
+
+  /// Pixel size read from the image header without decoding the pixels; null when unreadable.
+  static Future<ui.Size?> measure(Uint8List bytes) async {
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? descriptor;
+    try {
+      buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      return ui.Size(descriptor.width.toDouble(), descriptor.height.toDouble());
+    } catch (_) {
+      return null;
+    } finally {
+      descriptor?.dispose();
+      buffer?.dispose();
+    }
+  }
+}
+
 /// Per-contact photo display settings for call screens.
 ///
 /// Controls how a contact's photo appears as the backdrop during calls —

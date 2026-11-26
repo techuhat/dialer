@@ -3,17 +3,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/models/contact_photo_settings.dart';
 import '../../core/models/live_call.dart';
 import '../../core/services/caller_details.dart';
+import '../../core/theme.dart';
 import '../../core/utils/format_utils.dart';
 import '../../core/widgets/contact_avatar.dart';
-import '../../core/widgets/photo_backdrop.dart';
 
 abstract final class CallColors {
   static const Color top = Color(0xFF0A1929);
   static const Color bottom = Color(0xFF15324F);
   static const Color sheet = Color(0xFF112840);
-  static const Color accept = Color(0xFF1E8E3E);
+  static const Color accept = AppPalette.callGreen;
   static const Color decline = Color(0xFFD93025);
   static const Color accent = Color(0xFF8AB4F8);
   static const Color hold = Color(0xFFFDD663);
@@ -59,47 +60,8 @@ class _CallerDetailsBuilderState extends State<CallerDetailsBuilder> {
   Widget build(BuildContext context) => widget.builder(context, _details);
 }
 
-/// Dark call backdrop: the contact photo when there is one, the brand gradient otherwise.
-class CallBackground extends StatelessWidget {
-  const CallBackground({required this.details, required this.child, super.key});
-
-  final CallerDetails details;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final Uint8List? photo = details.photo;
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light.copyWith(
-        statusBarColor: Colors.transparent,
-        systemNavigationBarColor: CallColors.bottom,
-      ),
-      child: Scaffold(
-        backgroundColor: CallColors.top,
-        body: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            if (photo == null)
-              const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: <Color>[CallColors.top, CallColors.bottom],
-                  ),
-                ),
-              )
-            else
-              PhotoBackdrop(photo: photo, settings: details.photoSettings, defaultOverlay: 0.55),
-            SafeArea(child: child),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Avatar, name and the line under it.
+/// Avatar, name and the line under it. On a poster the photo behind is the avatar: no circle, and a
+/// bigger name meant to sit at the top of the screen.
 class CallerHeader extends StatelessWidget {
   const CallerHeader({
     required this.name,
@@ -120,27 +82,46 @@ class CallerHeader extends StatelessWidget {
   /// Pulsing rings around the avatar while a call rings.
   final bool halo;
 
+  static const List<Shadow> _lift = <Shadow>[Shadow(color: Color(0x66000000), blurRadius: 16, offset: Offset(0, 1))];
+
   @override
   Widget build(BuildContext context) {
+    final bool poster = details.photoStyle == PhotoStyle.poster;
     final Widget avatar = ContactAvatar(name: name, photo: details.photo, size: avatarSize);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        if (halo) _Halo(size: avatarSize, child: avatar) else avatar,
-        const SizedBox(height: 20),
+        if (!poster) ...<Widget>[
+          if (halo) _Halo(size: avatarSize, child: avatar) else avatar,
+          const SizedBox(height: 20),
+        ],
         Text(
           name,
           textAlign: TextAlign.center,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w500, height: 1.15),
+          style: poster
+              ? const TextStyle(
+                  color: Colors.white,
+                  fontSize: 38,
+                  fontWeight: FontWeight.w600,
+                  height: 1.1,
+                  letterSpacing: -0.6,
+                  shadows: _lift,
+                )
+              : const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w500, height: 1.15),
         ),
         if (subtitle != null) ...<Widget>[
           const SizedBox(height: 6),
           Text(
             subtitle!,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: CallColors.subtle, fontSize: 16, letterSpacing: 0.2),
+            style: TextStyle(
+              color: CallColors.subtle,
+              fontSize: 16,
+              letterSpacing: 0.2,
+              shadows: poster ? _lift : null,
+            ),
           ),
         ],
         if (status != null) ...<Widget>[const SizedBox(height: 12), status!],

@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ class PhotoBackdrop extends StatelessWidget {
     this.settings,
     this.defaultOverlay = 0.35,
     this.topShade = 0.5,
+    this.wash = false,
     this.backgroundColor = const Color(0xFF0A1929),
     super.key,
   });
@@ -22,7 +22,14 @@ class PhotoBackdrop extends StatelessWidget {
 
   /// Overlay strength at the top relative to the bottom, which carries the controls.
   final double topShade;
+
+  /// Only a soft wash of the photo's colours: decoded a few pixels wide and stretched, which blurs
+  /// it for free instead of running a blur filter every frame behind the call animations.
+  final bool wash;
   final Color backgroundColor;
+
+  /// Few enough pixels that no feature survives, only colour.
+  static const int _washWidth = 4;
 
   static BoxFit boxFit(String mode) => switch (mode) {
         PhotoFitMode.contain => BoxFit.contain,
@@ -34,17 +41,27 @@ class PhotoBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final BoxFit fit = boxFit(settings?.fitMode ?? PhotoFitMode.cover);
     final double overlay = settings?.overlayOpacity ?? defaultOverlay;
-    final double rotation = settings?.rotation ?? 0;
-    Widget image = Image.memory(photo, fit: fit, gaplessPlayback: true, filterQuality: FilterQuality.medium);
-    if (rotation != 0) image = Transform.rotate(angle: rotation * math.pi / 180, child: image);
+    // Given the whole box: left to size itself, an Image keeps the photo's own aspect ratio and a
+    // square photo sat in the middle of the screen whatever the fit.
+    Widget image = SizedBox.expand(
+      child: Image.memory(
+        photo,
+        fit: wash ? BoxFit.cover : boxFit(settings?.fitMode ?? PhotoFitMode.cover),
+        cacheWidth: wash ? _washWidth : null,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.medium,
+      ),
+    );
+    // RotatedBox lays the photo out turned, so a sideways photo still fills the screen.
+    final int turns = ((settings?.rotation ?? 0) / 90).round() % 4;
+    if (turns != 0) image = RotatedBox(quarterTurns: turns, child: image);
 
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
         ColoredBox(color: backgroundColor),
-        Center(child: image),
+        image,
         DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(

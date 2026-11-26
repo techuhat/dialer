@@ -7,6 +7,11 @@ import '../core/models/contact_photo_settings.dart';
 import '../core/services/contact_photo_settings_service.dart';
 import '../core/services/contacts_service.dart';
 import '../core/services/theme_service.dart';
+import '../core/theme.dart';
+import '../core/utils/format_utils.dart';
+import '../core/widgets/add_contact_icon.dart';
+import '../core/widgets/app_sheet.dart';
+import '../core/widgets/contact_picker.dart';
 import 'contact_photo_preview_page.dart';
 
 class ContactEditorPage extends StatefulWidget {
@@ -14,6 +19,21 @@ class ContactEditorPage extends StatefulWidget {
   final String? initialNumber;
 
   const ContactEditorPage({super.key, this.contact, this.initialNumber});
+
+  /// Saves [number] the way the stock dialer offers: as a new contact, or added to one the user picks.
+  static Future<void> saveNumber(BuildContext context, String number) async {
+    final bool? existing = await showAppSheet<bool>(context, builder: (_) => _SaveNumberSheet(number: number));
+    if (existing == null || !context.mounted) return;
+    Contact? contact;
+    if (existing) {
+      contact = await pickContact(context, title: 'Add to a contact');
+      if (contact == null || !context.mounted) return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (_) => ContactEditorPage(contact: contact, initialNumber: number)),
+    );
+  }
 
   @override
   State<ContactEditorPage> createState() => _ContactEditorPageState();
@@ -39,6 +59,10 @@ class _ContactEditorPageState extends State<ContactEditorPage> {
       _phoneControllers = widget.contact!.phones
           .map((p) => PhoneNumberController(p))
           .toList();
+      final String? added = widget.initialNumber;
+      if (added != null && !widget.contact!.phones.any((PhoneNumber p) => PhoneUtils.isSameNumber(p.number, added))) {
+        _phoneControllers.add(PhoneNumberController(PhoneNumber(number: added, label: 'Mobile')));
+      }
       _emailControllers = widget.contact!.emails
           .map((e) => EmailController(e))
           .toList();
@@ -475,4 +499,44 @@ class EmailController {
         label = email.label;
 
   void dispose() => addressController.dispose();
+}
+
+/// The two ways to save a number; pops true for "add to a contact".
+class _SaveNumberSheet extends StatelessWidget {
+  const _SaveNumberSheet({required this.number});
+
+  final String number;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette palette = AppPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: Text(
+              PhoneUtils.formatPhoneNumber(number),
+              style: TextStyle(color: palette.text, fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+          ),
+          ListTile(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            leading: const AddContactIcon(),
+            title: const Text('Create new contact'),
+            onTap: () => Navigator.pop(context, false),
+          ),
+          ListTile(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            leading: Icon(Icons.person_search_rounded, color: palette.accent, size: 28),
+            title: const Text('Add to a contact'),
+            onTap: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+  }
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -14,22 +15,37 @@ import 'contacts_service.dart';
 import 'platform_channel.dart';
 import 'warm_call_log_store.dart';
 
-/// Recents, read from the system call log (Telecom logs every call, even when this app is closed).
-/// Names are refreshed from contacts; a warm snapshot gives the first frame something to show.
+/// Recents, read from the system call log (Telecom logs every call, even when this app is closed)
+/// a page at a time, newest first. Names are refreshed from contacts; a warm snapshot gives the
+/// first frame something to show.
 class CallLogService {
   const CallLogService._();
 
+  /// Calls read per page.
+  static const int pageSize = 100;
+
+  /// The most calls of one number the details page reads, more than a call log keeps.
+  static const int _historyLimit = 1000;
   static const int _snapshotSize = 100;
 
   static List<CallLogEntry> _entries = const <CallLogEntry>[];
+  static bool _hasMore = true;
   static final StreamController<List<CallLogEntry>> _controller =
       StreamController<List<CallLogEntry>>.broadcast();
-  static Future<void>? _inFlight;
+  static Future<void>? _refreshing;
+  static Future<bool>? _loadingMore;
+
+  /// Reads run one after another, so a page never lands on top of a refresh it raced.
+  static Future<void> _queue = Future<void>.value();
   static StreamSubscription<List<Contact>>? _contactChanges;
   static bool _loaded = false;
   static Timer? _snapshotTimer;
 
+  /// The loaded calls, newest first.
   static List<CallLogEntry> get entries => _entries;
+
+  /// Older calls are left to load after [entries].
+  static bool get hasMore => _hasMore;
 
   static int get unreadMissedCount => _entries.where((CallLogEntry e) => e.isUnreadMissed).length;
 
@@ -40,17 +56,84 @@ class CallLogService {
     yield* _controller.stream;
   }
 
-  static Future<void> refresh() => _inFlight ??= _load().whenComplete(() => _inFlight = null);
+  /// Every change to the loaded calls, without the current ones first.
+  static Stream<List<CallLogEntry>> get changes => _controller.stream;
 
-  static Future<void> _load() async {
-    final List<Object?>? rows = await invokeSafe<List<Object?>>(CallService.channel, 'getCallLog');
-    if (rows == null) return;
+  static Future<void> refresh() => _refreshing ??= _serial(_reload).whenComplete(() => _refreshing = null);
+
+  /// Re-reads the newest calls, as many as are loaded (a page at least), so a change anywhere in
+  /// them shows.
+  static Future<void> _reload() async {
+    final _Page? page = await _fetch(limit: math.max(pageSize, _entries.length));
+    if (page == null) return;
     if (!_loaded) {
       unawaited(_dropLegacyDatabase());
       _contactChanges ??= ContactsService.contactsStream.listen((_) => refreshNames());
     }
     _loaded = true;
-    _publish(rows.whereType<Map<Object?, Object?>>().map(CallLogEntry.fromNative).map(_withContactName).toList());
+    _hasMore = page.more;
+    _publish(page.entries);
+  }
+
+  /// Appends the next page of older calls; false when none are left or the log can't be read.
+  static Future<bool> loadMore() => _loadingMore ??= _serial(_appendPage).whenComplete(() => _loadingMore = null);
+
+  static Future<bool> _appendPage() async {
+    if (!_loaded) {
+      await _reload();
+      return _loaded && _entries.isNotEmpty;
+    }
+    if (!_hasMore) return false;
+    final _Page? page = await _fetch(limit: pageSize, before: _entries.isEmpty ? null : _entries.last);
+    if (page == null) return false;
+    _hasMore = page.more;
+    if (page.entries.isEmpty) return false;
+    _publish(<CallLogEntry>[..._entries, ...page.entries]);
+    return true;
+  }
+
+  /// Loads pages until every call since [since] is in, e.g. for statistics over a period.
+  static Future<void> loadSince(DateTime since) async {
+    if (!_loaded) await refresh();
+    while (_hasMore && (_entries.isEmpty || !_entries.last.timestamp.isBefore(since))) {
+      if (!await loadMore()) return;
+    }
+  }
+
+  /// Every logged call with [number], newest first, matched natively by the last ten digits so
+  /// `+91…` and `0…` forms count as one number. Null when the log can't be read.
+  static Future<List<CallLogEntry>?> historyFor(String number) async {
+    if (number.isEmpty) return const <CallLogEntry>[];
+    return (await _fetch(limit: _historyLimit, number: number))?.entries;
+  }
+
+  static Future<_Page?> _fetch({required int limit, CallLogEntry? before, String? number}) async {
+    final Map<Object?, Object?>? reply = await invokeSafe<Map<Object?, Object?>>(
+      CallService.channel,
+      'getCallLog',
+      <String, Object?>{
+        'limit': limit,
+        if (before != null) 'beforeDate': before.timestamp.millisecondsSinceEpoch,
+        if (before != null) 'beforeId': int.tryParse(before.id),
+        'number': ?number,
+      },
+    );
+    if (reply == null) return null;
+    final Object? rows = reply['rows'];
+    return _Page(
+      <CallLogEntry>[
+        if (rows is List<Object?>)
+          for (final Object? row in rows)
+            if (row is Map<Object?, Object?>) _withContactName(CallLogEntry.fromNative(row)),
+      ],
+      more: reply['more'] == true,
+    );
+  }
+
+  static Future<T> _serial<T>(Future<T> Function() job) {
+    final Future<T> result = _queue.then((_) => job());
+    _queue = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
   }
 
   /// Names from current contacts win over the log's cached name, which goes stale on renames.
@@ -82,6 +165,7 @@ class CallLogService {
   static Future<bool> clearAll() async {
     final int? removed = await invokeSafe<int>(CallService.channel, 'clearCallLog');
     if (removed == null) return false;
+    _hasMore = false;
     _publish(const <CallLogEntry>[]);
     return true;
   }
@@ -134,8 +218,26 @@ class CallLogService {
   }
 
   @visibleForTesting
-  static void setEntriesForTest(List<CallLogEntry> entries) {
+  static void setEntriesForTest(List<CallLogEntry> entries, {bool hasMore = false}) {
     _loaded = true;
+    _hasMore = hasMore;
     _entries = List<CallLogEntry>.unmodifiable(entries);
   }
+
+  @visibleForTesting
+  static void resetForTest() {
+    _loaded = false;
+    _hasMore = true;
+    _entries = const <CallLogEntry>[];
+    _refreshing = null;
+    _loadingMore = null;
+    _queue = Future<void>.value();
+  }
+}
+
+class _Page {
+  const _Page(this.entries, {required this.more});
+
+  final List<CallLogEntry> entries;
+  final bool more;
 }

@@ -225,7 +225,7 @@ class _SquigglePainter extends CustomPainter {
   bool shouldRepaint(_SquigglePainter old) => old.progress != progress || old.color != color;
 }
 
-/// Keypad button drawn as an old rotary dial; it winds like one when tapped.
+/// Keypad button drawn as the rotary dial; tapped, it dials its top tick like an old phone.
 class _RotaryDialButton extends StatefulWidget {
   const _RotaryDialButton({required this.size, required this.selected, required this.label, required this.onTap});
 
@@ -239,22 +239,40 @@ class _RotaryDialButton extends StatefulWidget {
 }
 
 class _RotaryDialButtonState extends State<_RotaryDialButton> with SingleTickerProviderStateMixin {
-  late final AnimationController _spin = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
-  Animation<double> _turn = const AlwaysStoppedAnimation<double>(0);
+  late final DialWinder _winder = DialWinder(vsync: this);
+  double? _light;
+  int _spins = 0;
+  bool _still = false;
+
+  @override
+  void initState() {
+    super.initState();
+    RotaryDial.spins.addListener(_spinRound);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _still = MediaQuery.disableAnimationsOf(context);
+  }
 
   @override
   void dispose() {
-    _spin.dispose();
+    RotaryDial.spins.removeListener(_spinRound);
+    _winder.dispose();
     super.dispose();
   }
 
-  void _wind(double turns) {
-    _turn = TweenSequence<double>(<TweenSequenceItem<double>>[
-      TweenSequenceItem<double>(tween: Tween<double>(begin: 0, end: turns).chain(CurveTween(curve: Curves.easeOut)), weight: 45),
-      TweenSequenceItem<double>(tween: Tween<double>(begin: turns, end: 0).chain(CurveTween(curve: Curves.elasticOut)), weight: 55),
-    ]).animate(_spin);
-    _spin.forward(from: 0);
+  /// Lights the top tick and winds the ring [turns] round, then lets it run back.
+  void _dial(double turns) {
+    final int spin = ++_spins;
+    setState(() => _light = RotaryDial.tickToward(const Offset(0, -1)));
+    _winder.wind(turns, still: _still).whenCompleteOrCancel(() {
+      if (mounted && spin == _spins) setState(() => _light = null);
+    });
   }
+
+  void _spinRound() => _dial(1);
 
   @override
   Widget build(BuildContext context) {
@@ -264,18 +282,22 @@ class _RotaryDialButtonState extends State<_RotaryDialButton> with SingleTickerP
       label: widget.label,
       child: GestureDetector(
         onTap: () {
-          _wind(0.16);
+          _dial(0.16);
           widget.onTap();
         },
         onLongPress: () {
           HapticFeedback.heavyImpact();
-          _wind(1);
+          _dial(1);
           showToast(context, 'Wheee! Want more of this? Settings → Navigation style → Dial menu.');
         },
         child: AnimatedBuilder(
-          animation: _spin,
-          builder: (BuildContext context, _) =>
-              RotaryDialFace(size: widget.size, turns: _turn.value, glow: widget.selected),
+          animation: _winder.listenable,
+          builder: (BuildContext context, _) => RotaryDialFace(
+            size: widget.size,
+            turns: _winder.turns,
+            glow: widget.selected,
+            light: _light,
+          ),
         ),
       ),
     );

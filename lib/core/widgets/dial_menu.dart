@@ -34,18 +34,41 @@ class DialMenu extends StatefulWidget {
   State<DialMenu> createState() => _DialMenuState();
 }
 
-class _DialMenuState extends State<DialMenu> with SingleTickerProviderStateMixin {
+class _DialMenuState extends State<DialMenu> with TickerProviderStateMixin {
   late final AnimationController _reveal = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 380),
     reverseDuration: const Duration(milliseconds: 200),
   );
+  late final DialWinder _winder = DialWinder(vsync: this);
   bool _open = false;
   bool _holding = false;
+  bool _still = false;
+
+  /// The page under the finger, and the tick lit toward it (or toward the finger between pages).
   int? _lit;
+  double? _glow;
+
+  /// The tick the ring carries while it dials a pick; [_spins] tells the newest spin apart.
+  double? _dialling;
+  int _spins = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    RotaryDial.spins.addListener(_spinRound);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _still = MediaQuery.disableAnimationsOf(context);
+  }
 
   @override
   void dispose() {
+    RotaryDial.spins.removeListener(_spinRound);
+    _winder.dispose();
     _reveal.dispose();
     super.dispose();
   }
@@ -62,19 +85,43 @@ class _DialMenuState extends State<DialMenu> with SingleTickerProviderStateMixin
     setState(() {
       _open = open;
       _lit = null;
+      _glow = null;
     });
   }
 
+  /// Dials [tick]: the ring carries it [turns] round to the finger stop and runs back, lit all
+  /// the way.
+  void _dial(double tick, double turns) {
+    final int spin = ++_spins;
+    setState(() => _dialling = tick);
+    _winder.wind(turns, still: _still).whenCompleteOrCancel(() {
+      if (mounted && spin == _spins) setState(() => _dialling = null);
+    });
+  }
+
+  void _spinRound() => _dial(RotaryDial.tickToward(const Offset(0, -1)), 1);
+
   void _choose(int index) {
     HapticFeedback.lightImpact();
+    final double tick = _glow ?? RotaryDial.tickToward(_Ring.directionOf(index, widget.destinations.length));
     _setOpen(false);
+    _dial(tick, RotaryDial.turnsToStop(tick));
     if (index != widget.selectedIndex) widget.onSelected(index);
   }
 
-  void _light(int? index) {
-    if (index == _lit) return;
-    if (index != null) HapticFeedback.selectionClick();
-    setState(() => _lit = index);
+  /// Lights a page (or none) and the ticks facing it, or facing [finger] between pages.
+  void _light(int? index, {Offset? finger}) {
+    final double? glow = index != null
+        ? RotaryDial.tickToward(_Ring.directionOf(index, widget.destinations.length))
+        : finger == null
+        ? null
+        : RotaryDial.tickToward(finger);
+    if (index == _lit && glow == _glow) return;
+    if (index != null && index != _lit) HapticFeedback.selectionClick();
+    setState(() {
+      _lit = index;
+      _glow = glow;
+    });
   }
 
   void _holdStart(Offset global) {
@@ -87,7 +134,11 @@ class _DialMenuState extends State<DialMenu> with SingleTickerProviderStateMixin
     if (!_holding) return;
     final RenderBox box = context.findRenderObject()! as RenderBox;
     final _Ring ring = _Ring(box.size, MediaQuery.paddingOf(context).bottom, widget.destinations.length);
-    _light(ring.pick(box.globalToLocal(global)));
+    final Offset local = box.globalToLocal(global);
+    final int? page = ring.pick(local);
+    final Offset fromDial = local - ring.center;
+    // Between pages the light follows the finger itself, once it is off the dial.
+    _light(page, finger: page == null && fromDial.distance > DialMenu.dialSize / 2 ? fromDial : null);
   }
 
   void _holdEnd() {
@@ -106,8 +157,6 @@ class _DialMenuState extends State<DialMenu> with SingleTickerProviderStateMixin
     final double inset = MediaQuery.paddingOf(context).bottom;
     final NavDestination current = widget.destinations[widget.selectedIndex];
     final bool unread = widget.badges.values.any((int count) => count > 0);
-    // Wind the wheel towards the lit page, the way a finger winds it to the stop.
-    final double turns = !_open ? 0 : 0.04 + 0.08 * ((_lit ?? -1) + 1);
 
     final Widget dial = Semantics(
       button: true,
@@ -124,16 +173,14 @@ class _DialMenuState extends State<DialMenu> with SingleTickerProviderStateMixin
         onPanStart: (DragStartDetails details) => _holdStart(details.globalPosition),
         onPanUpdate: (DragUpdateDetails details) => _holdMove(details.globalPosition),
         onPanEnd: (_) => _holdEnd(),
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(end: turns),
-          duration: const Duration(milliseconds: 420),
-          curve: Curves.easeOutBack,
-          builder: (BuildContext context, double value, _) => RotaryDialFace(
+        child: AnimatedBuilder(
+          animation: _winder.listenable,
+          builder: (BuildContext context, _) => RotaryDialFace(
             size: DialMenu.dialSize,
-            turns: value,
+            turns: _winder.turns,
             glow: _open,
             dot: unread && !_open,
-            center: Icon(current.selectedIcon, color: Colors.white, size: 16),
+            light: _dialling ?? _glow,
           ),
         ),
       ),
@@ -339,8 +386,16 @@ class _Ring {
   final Offset center;
   final double radius;
 
-  /// Direction of page [index], counter-clockwise from 3 o'clock.
-  double angle(int index) => math.pi * (1 - (index + 0.5) / count);
+  /// Direction of page [index] of [count], counter-clockwise from 3 o'clock.
+  static double angleOf(int index, int count) => math.pi * (1 - (index + 0.5) / count);
+
+  /// The same direction as a screen vector of length 1.
+  static Offset directionOf(int index, int count) {
+    final double angle = angleOf(index, count);
+    return Offset(math.cos(angle), -math.sin(angle));
+  }
+
+  double angle(int index) => angleOf(index, count);
 
   Offset at(double angle) => center + Offset(math.cos(angle), -math.sin(angle)) * radius;
 
@@ -392,7 +447,7 @@ class _WheelPainter extends CustomPainter {
     final double radius = from + (ring.radius + _Ring.rim - from) * grow;
     canvas.drawCircle(ring.center, radius + 1, Paint()..color = edge);
     canvas.drawCircle(ring.center, radius, Paint()..color = disc);
-    // Inner edge of the finger wheel, around the centre card.
+    // Inner edge of the finger wheel, around the dial.
     final double inner = ring.radius - _Ring.rim;
     if (radius > inner) {
       canvas.drawCircle(

@@ -11,7 +11,8 @@ class WarmCallLogStore {
     if (raw == null) {
       return <String, dynamic>{};
     }
-    return <String, dynamic>{_key: raw};
+    // Same key CallLogService.loadWarmSnapshot reads (and saveWarmSnapshot writes).
+    return <String, dynamic>{'snapshot': raw};
   }
 
   static Future<void> write(Map<String, dynamic> data) async {

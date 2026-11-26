@@ -8,6 +8,7 @@ import '../../core/services/call_log_service.dart';
 import '../../core/theme.dart';
 import '../../core/utils/format_utils.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/fast_scroller.dart';
 import '../../core/widgets/feedback.dart';
 import '../../core/widgets/page_header.dart';
 import '../blocked_numbers_page.dart';
@@ -23,12 +24,17 @@ class RecentsPage extends StatefulWidget {
 }
 
 class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClientMixin {
+  /// How close to the end of the list (in pixels) the next page starts loading.
+  static const double _loadAhead = 1200;
+
   final TextEditingController _search = TextEditingController();
+  final ScrollController _scroll = ScrollController();
   StreamSubscription<List<CallLogEntry>>? _subscription;
   List<CallLogEntry> _entries = CallLogService.entries;
   List<Object> _rows = const <Object>[];
   RecentsFilter _filter = RecentsFilter.all;
   bool _searching = false;
+  bool _loadingMore = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -37,6 +43,7 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
   void initState() {
     super.initState();
     _rows = _buildRows();
+    _scroll.addListener(_maybeLoadMore);
     _subscription = CallLogService.watch().listen((List<CallLogEntry> entries) {
       if (!mounted) return;
       setState(() {
@@ -44,21 +51,47 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
         _rows = _buildRows();
       });
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeLoadMore());
   }
 
   @override
   void dispose() {
     _subscription?.cancel();
+    _scroll.dispose();
     _search.dispose();
     super.dispose();
   }
 
-  void _update(VoidCallback change) => setState(() {
-        change();
-        _rows = _buildRows();
-      });
+  void _update(VoidCallback change) {
+    setState(() {
+      change();
+      _rows = _buildRows();
+    });
+    // A narrow filter or a search may match nothing in the loaded pages yet.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeLoadMore());
+  }
 
-  /// Section titles (String) and rows (RecentGroup) in display order.
+  void _setFilter(RecentsFilter filter) {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    _update(() => _filter = filter);
+  }
+
+  /// Loads the next page once the list is near its end, and again while the rows still don't
+  /// reach past the screen (a filter can match few calls per page).
+  void _maybeLoadMore() {
+    if (!mounted || _loadingMore || !CallLogService.hasMore) return;
+    if (_scroll.hasClients && _scroll.position.extentAfter > _loadAhead) return;
+    _loadingMore = true;
+    CallLogService.loadMore().then((bool loaded) {
+      if (!mounted) return;
+      // Also redraws the footer when the log turned out to end on an empty page.
+      setState(() => _loadingMore = false);
+      // After a failed read, wait for the next scroll instead of retrying in a loop.
+      if (loaded) WidgetsBinding.instance.addPostFrameCallback((_) => _maybeLoadMore());
+    });
+  }
+
+  /// Day headings (String) and rows (RecentGroup) in display order.
   List<Object> _buildRows() {
     final String query = _search.text.trim().toLowerCase();
     final String digits = query.replaceAll(RegExp(r'\D'), '');
@@ -69,13 +102,13 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
           (digits.isNotEmpty && entry.number.replaceAll(RegExp(r'\D'), '').contains(digits));
     });
 
-    final DateTime today = DateUtils.dateOnly(DateTime.now());
+    final DateTime now = DateTime.now();
     final List<Object> rows = <Object>[];
-    String? section;
+    DateTime? day;
     for (final RecentGroup group in groupRecents(visible)) {
-      final int daysAgo = today.difference(DateUtils.dateOnly(group.latest.timestamp)).inDays;
-      final String title = daysAgo <= 0 ? 'Today' : (daysAgo == 1 ? 'Yesterday' : 'Older');
-      if (title != section) rows.add(section = title);
+      final DateTime time = group.latest.timestamp;
+      // A heading per calendar day; labels are only worked out when the day changes.
+      if (day == null || !DateUtils.isSameDay(day, time)) rows.add(recentDayLabel(day = time, now: now));
       rows.add(group);
     }
     return rows;
@@ -96,7 +129,6 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
   Widget build(BuildContext context) {
     super.build(context);
     final AppPalette palette = AppPalette.of(context);
-    final bool hasBlocked = _entries.any((CallLogEntry e) => e.type == CallType.blocked);
     final int unread = CallLogService.unreadMissedCount;
     return SafeArea(
       bottom: false,
@@ -113,20 +145,19 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               children: <Widget>[
                 for (final RecentsFilter filter in RecentsFilter.values)
-                  if (filter != RecentsFilter.blocked || hasBlocked || _filter == RecentsFilter.blocked)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        label: Text(filter == RecentsFilter.missed && unread > 0 ? '${filter.label} · $unread' : filter.label),
-                        selected: _filter == filter,
-                        showCheckmark: false,
-                        onSelected: (_) => _update(() => _filter = filter),
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(filter == RecentsFilter.missed && unread > 0 ? '${filter.label} · $unread' : filter.label),
+                      selected: _filter == filter,
+                      showCheckmark: false,
+                      onSelected: (_) => _setFilter(filter),
                     ),
+                  ),
               ],
             ),
           ),
-          Expanded(child: _list(palette)),
+          Expanded(child: _list()),
         ],
       ),
     );
@@ -200,24 +231,29 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
     );
   }
 
-  Widget _list(AppPalette palette) {
+  Widget _list() {
+    // Older pages may still hold matches for this filter or search.
+    if (_rows.isEmpty && CallLogService.hasMore) return const _LoadingOlder();
     if (_rows.isEmpty) return _empty();
-    return RefreshIndicator(
-      onRefresh: CallLogService.refresh,
-      child: ListView.builder(
-        padding: const EdgeInsets.only(bottom: 120),
-        itemCount: _rows.length,
-        itemBuilder: (BuildContext context, int index) {
-          final Object row = _rows[index];
-          if (row is String) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-              child: Text(row, style: TextStyle(color: palette.muted, fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-            );
-          }
-          final RecentGroup group = row as RecentGroup;
-          return _RecentTile(key: ValueKey<String>(group.latest.id), group: group);
-        },
+    return FastScroller(
+      controller: _scroll,
+      labelAt: (double fraction) => FastScroller.headingAt(_rows, fraction),
+      child: RefreshIndicator(
+        onRefresh: CallLogService.refresh,
+        child: ListView.builder(
+          controller: _scroll,
+          padding: const EdgeInsets.only(bottom: 120),
+          itemCount: _rows.length + 1,
+          itemBuilder: (BuildContext context, int index) {
+            if (index == _rows.length) {
+              return CallLogService.hasMore ? const _LoadingOlder() : const _EndOfHistory();
+            }
+            final Object row = _rows[index];
+            if (row is String) return DayHeading(row);
+            final RecentGroup group = row as RecentGroup;
+            return _RecentTile(key: ValueKey<String>(group.latest.id), group: group);
+          },
+        ),
       ),
     );
   }
@@ -235,8 +271,47 @@ class _RecentsPageState extends State<RecentsPage> with AutomaticKeepAliveClient
       RecentsFilter.missed => const EmptyState(emoji: '🏆', title: 'No missed calls', message: 'Fastest thumb in town.'),
       RecentsFilter.incoming => const EmptyState(emoji: '🦗', title: 'Nobody called', message: 'Crickets… maybe call someone first?'),
       RecentsFilter.outgoing => const EmptyState(emoji: '☎️', title: 'No outgoing calls', message: 'The keypad is feeling a little lonely.'),
+      RecentsFilter.declined => const EmptyState(emoji: '🙅', title: 'No declined calls', message: 'You picked up every time. Very polite.'),
       RecentsFilter.blocked => const EmptyState(emoji: '🛡️', title: 'Nothing blocked', message: 'No pests got through. Nice.'),
     };
+  }
+}
+
+/// Footer while older calls are loading.
+class _LoadingOlder extends StatelessWidget {
+  const _LoadingOlder();
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette palette = AppPalette.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2, color: palette.accent)),
+          const SizedBox(width: 12),
+          Text('Loading older calls', style: TextStyle(color: palette.muted, fontSize: 13.5)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Footer once the whole call log is on screen.
+class _EndOfHistory extends StatelessWidget {
+  const _EndOfHistory();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      child: Text(
+        'Start of your call history',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: AppPalette.of(context).muted, fontSize: 13),
+      ),
+    );
   }
 }
 
@@ -300,6 +375,7 @@ class _RecentTile extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 3),
+                  // The time comes first so a long label or place name can never cut it off.
                   Row(
                     children: <Widget>[
                       for (final CallType type in types.take(3))
@@ -308,14 +384,25 @@ class _RecentTile extends StatelessWidget {
                           child: Icon(CallTypeVisual.of(type).icon, size: 15, color: CallTypeVisual.colorOf(type, palette)),
                         ),
                       const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          <String>[?detail, recentTimeLabel(latest.timestamp)].join(' · '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: palette.muted, fontSize: 13.5),
+                      Text(
+                        recentTimeLabel(latest.timestamp),
+                        style: TextStyle(
+                          color: palette.muted,
+                          fontSize: 13.5,
+                          fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
                         ),
                       ),
+                      if (detail != null) ...<Widget>[
+                        Text(' · ', style: TextStyle(color: palette.muted, fontSize: 13.5)),
+                        Flexible(
+                          child: Text(
+                            detail,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: palette.muted, fontSize: 13.5),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],

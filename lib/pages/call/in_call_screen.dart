@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../core/call_manager.dart';
 import '../../core/call_service.dart';
 import '../../core/models/call_note.dart';
+import '../../core/models/contact_photo_settings.dart';
 import '../../core/models/live_call.dart';
 import '../../core/services/caller_details.dart';
 import '../../core/services/call_notes_service.dart';
@@ -13,6 +14,7 @@ import '../../core/widgets/app_sheet.dart';
 import '../../core/widgets/keypad.dart';
 import 'add_call_picker.dart';
 import 'call_widgets.dart';
+import 'caller_backdrop.dart';
 
 /// Outgoing, active, held and conference calls: a view over [CallManager].
 class InCallScreen extends StatefulWidget {
@@ -190,6 +192,7 @@ class _InCallScreenState extends State<InCallScreen> {
           number: call.number,
           builder: (BuildContext context, CallerDetails details) => CallBackground(
             details: details,
+            reveal: call.isConnecting,
             child: Stack(
               children: <Widget>[
                 _layout(call, details, ended),
@@ -205,6 +208,7 @@ class _InCallScreenState extends State<InCallScreen> {
   Widget _layout(LiveCall call, CallerDetails details, EndedCall? ended) {
     final LiveCall? waiting = _manager.waiting;
     final LiveCall? other = _manager.background;
+    final bool poster = details.photoStyle == PhotoStyle.poster;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       child: Column(
@@ -212,8 +216,11 @@ class _InCallScreenState extends State<InCallScreen> {
           if (waiting != null) _WaitingCallCard(call: waiting, run: _run),
           if (other != null && waiting == null) _HeldCallBar(call: other, onSwap: () => _run(CallService.swap, "Couldn't swap calls")),
           Expanded(
-            child: Center(
+            // A poster's name sits at the top, leaving the face clear.
+            child: Align(
+              alignment: poster ? Alignment.topCenter : Alignment.center,
               child: SingleChildScrollView(
+                padding: EdgeInsets.only(top: poster ? 12 : 0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
@@ -348,6 +355,7 @@ class _InCallScreenState extends State<InCallScreen> {
                   fill: Colors.white.withValues(alpha: 0.1),
                 ),
                 onKey: _sendDtmf,
+                clicks: false,
               ),
               const Spacer(),
               TextButton(

@@ -4,14 +4,14 @@ import 'package:flutter/services.dart';
 class KeypadFeedback {
   const KeypadFeedback._();
 
-  static void key() {
+  static void key({bool sound = true}) {
     HapticFeedback.selectionClick();
-    SystemSound.play(SystemSoundType.click);
+    if (sound) SystemSound.play(SystemSoundType.click);
   }
 
-  static void alternateKey() {
+  static void alternateKey({bool sound = true}) {
     HapticFeedback.mediumImpact();
-    SystemSound.play(SystemSoundType.click);
+    if (sound) SystemSound.play(SystemSoundType.click);
   }
 
   static void backspace() => HapticFeedback.lightImpact();

@@ -106,6 +106,27 @@ class PhoneUtils {
 
   static bool isSameNumber(String a, String b) => matchKey(a) == matchKey(b);
 
+  /// Indices after which a typed number gets a visual gap, so it reads in groups while the text
+  /// itself stays as typed: `98765 43210`, `+91 98765 43210`, `098765 43210`, `+1 212 555 1234`.
+  /// Codes and numbers with pauses stay ungrouped.
+  static List<int> groupBreaks(String raw) {
+    if (raw.isEmpty || raw.contains(_nonDigitPlus)) return const <int>[];
+    final List<int> breaks;
+    if (raw.startsWith('+91')) {
+      breaks = <int>[2, if (_looksLikeIndianMobile(raw.substring(3))) 7];
+    } else if (raw.startsWith('+1')) {
+      breaks = const <int>[1, 4, 7];
+    } else if (raw.startsWith('0') && _looksLikeIndianMobile(raw.substring(1))) {
+      breaks = const <int>[5];
+    } else if (_looksLikeIndianMobile(raw)) {
+      breaks = const <int>[4];
+    } else {
+      return const <int>[];
+    }
+    // A gap after the last character would only push the cursor away.
+    return <int>[for (final int index in breaks) if (index < raw.length - 1) index];
+  }
+
   static String formatPhoneNumber(String number) {
     final String cleaned = cleanPhoneNumber(number);
     if (cleaned.isEmpty) return number.trim();

@@ -10,6 +10,7 @@ class AppPalette {
     required this.border,
     required this.bar,
     required this.accent,
+    required this.signal,
     required this.missed,
     required this.incoming,
     required this.outgoing,
@@ -23,6 +24,7 @@ class AppPalette {
     border: Color(0x1F0A1929),
     bar: Colors.white,
     accent: Color(0xFF1E6FD9),
+    signal: Color(0xFF0090B0),
     missed: Color(0xFFD93025),
     incoming: Color(0xFF257DE0),
     outgoing: Color(0xFF00B894),
@@ -36,11 +38,15 @@ class AppPalette {
     border: Color(0x1AFFFFFF),
     bar: Color(0xFF0F2236),
     accent: Color(0xFF42A5F5),
+    signal: Color(0xFF7FE7FF),
     missed: Color(0xFFEB6263),
     incoming: Color(0xFF338CED),
     outgoing: Color(0xFF00A888),
     declined: Color(0xFFD28E05),
   );
+
+  /// Green of "call" and "answer" buttons, the same in both themes.
+  static const Color callGreen = Color(0xFF1E8E3E);
 
   static AppPalette of(BuildContext context) => Theme.of(context).brightness == Brightness.dark ? dark : light;
 
@@ -50,6 +56,9 @@ class AppPalette {
   final Color border;
   final Color bar;
   final Color accent;
+
+  /// LED cyan of the futuristic bits (the add-contact glyph); paired with [accent] in gradients.
+  final Color signal;
 
   /// Call-type colours, shared by recents icons and the stats chart. In the order
   /// incoming, missed, outgoing, declined they pass the colour-blind checks on both surfaces;

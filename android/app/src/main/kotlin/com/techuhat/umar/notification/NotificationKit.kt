@@ -6,8 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.Build
 import androidx.annotation.DrawableRes
 import androidx.core.app.NotificationCompat
@@ -20,8 +18,10 @@ import com.techuhat.umar.receivers.NotificationActionReceiver
 
 /** Channels, intents and caller identity shared by the incoming and ongoing call notifications. */
 object NotificationKit {
-    // Channel ids are kept from earlier builds: a channel's sound is fixed once the user has it.
-    const val INCOMING_CHANNEL = "incoming_call_channel"
+    // A channel's sound is fixed once created, so the silent incoming channel has a new id and the old
+    // ringing one is deleted.
+    const val INCOMING_CHANNEL = "incoming_calls"
+    private const val LEGACY_INCOMING_CHANNEL = "incoming_call_channel"
     const val ONGOING_CHANNEL = "active_call_channel"
     const val INCOMING_ID = 1001
     const val ONGOING_ID = 1002
@@ -42,16 +42,16 @@ object NotificationKit {
     fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        if (manager.getNotificationChannel(LEGACY_INCOMING_CHANNEL) != null) {
+            manager.deleteNotificationChannel(LEGACY_INCOMING_CHANNEL)
+        }
         if (manager.getNotificationChannel(INCOMING_CHANNEL) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(INCOMING_CHANNEL, "Incoming calls", NotificationManager.IMPORTANCE_MAX).apply {
-                    setSound(
-                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build(),
-                    )
+                    // MyCallService does not declare IN_CALL_SERVICE_RINGING, so Telecom plays the ringtone
+                    // and the call-waiting tone. A channel sound rang a second time, and while any other call
+                    // was up (a held call, a WhatsApp or imo call) the system played it as its in-call chime.
+                    setSound(null, null)
                     enableVibration(false)
                     setShowBadge(false)
                     lockscreenVisibility = Notification.VISIBILITY_PUBLIC

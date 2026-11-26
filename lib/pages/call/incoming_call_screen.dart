@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import '../../core/call_manager.dart';
 import '../../core/call_router.dart';
 import '../../core/call_service.dart';
+import '../../core/models/contact_photo_settings.dart';
 import '../../core/models/live_call.dart';
 import '../../core/services/caller_details.dart';
 import '../../core/widgets/app_sheet.dart';
 import 'call_widgets.dart';
+import 'caller_backdrop.dart';
 
 class IncomingCallScreen extends StatefulWidget {
   const IncomingCallScreen({super.key});
@@ -102,6 +104,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             number: call.number,
             builder: (BuildContext context, CallerDetails details) => CallBackground(
               details: details,
+              reveal: true,
               child: _layout(call, details),
             ),
           );
@@ -111,6 +114,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   }
 
   Widget _layout(LiveCall call, CallerDetails details) {
+    final bool poster = details.photoStyle == PhotoStyle.poster;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
       child: Column(
@@ -119,19 +123,24 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             <String>['Incoming call', ?call.simLabel].join(' · '),
             style: const TextStyle(color: CallColors.subtle, fontSize: 15, letterSpacing: 0.4),
           ),
-          // Shrinks the caller block on short screens instead of overflowing.
+          // Shrinks the caller block on short screens instead of overflowing. On a poster the name
+          // sits at the top, leaving the face clear.
           Expanded(
             child: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints constraints) => FittedBox(
                 fit: BoxFit.scaleDown,
+                alignment: poster ? Alignment.topCenter : Alignment.center,
                 child: SizedBox(
                   width: constraints.maxWidth,
-                  child: CallerHeader(
-                    name: call.displayName,
-                    details: details,
-                    subtitle: CallerHeader.subtitleFor(call, details),
-                    avatarSize: 104,
-                    halo: true,
+                  child: Padding(
+                    padding: EdgeInsets.only(top: poster ? 12 : 0),
+                    child: CallerHeader(
+                      name: call.displayName,
+                      details: details,
+                      subtitle: CallerHeader.subtitleFor(call, details),
+                      avatarSize: 104,
+                      halo: true,
+                    ),
                   ),
                 ),
               ),

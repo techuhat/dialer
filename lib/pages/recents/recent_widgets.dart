@@ -45,11 +45,13 @@ List<RecentGroup> groupRecents(Iterable<CallLogEntry> entries) {
   return groups;
 }
 
+/// Recents filters; apart from All, every call type falls under exactly one of them.
 enum RecentsFilter {
   all('All'),
   missed('Missed'),
   incoming('Incoming'),
   outgoing('Outgoing'),
+  declined('Declined'),
   blocked('Blocked');
 
   const RecentsFilter(this.label);
@@ -58,8 +60,9 @@ enum RecentsFilter {
   bool accepts(CallLogEntry entry) => switch (this) {
         RecentsFilter.all => true,
         RecentsFilter.missed => entry.type == CallType.missed || entry.type == CallType.voicemail,
-        RecentsFilter.incoming => entry.type == CallType.incoming || entry.type == CallType.rejected,
+        RecentsFilter.incoming => entry.type == CallType.incoming,
         RecentsFilter.outgoing => entry.type == CallType.outgoing,
+        RecentsFilter.declined => entry.type == CallType.rejected,
         RecentsFilter.blocked => entry.type == CallType.blocked,
       };
 }
@@ -87,13 +90,53 @@ class CallTypeVisual {
       };
 }
 
-/// "2:15 pm" for the last two days, "Mon 12 Nov" this year, "12 Nov 2024" before that.
-String recentTimeLabel(DateTime time, {DateTime? now}) {
-  final DateTime today = DateUtils.dateOnly(now ?? DateTime.now());
-  final int daysAgo = today.difference(DateUtils.dateOnly(time)).inDays;
-  if (daysAgo <= 1) return DateFormat('h:mm a').format(time).toLowerCase();
-  if (time.year == today.year) return DateFormat('EEE d MMM').format(time);
-  return DateFormat('d MMM y').format(time);
+// Built once: recents format a heading and a time for every row of a long call log.
+final DateFormat _weekday = DateFormat('EEEE');
+final DateFormat _date = DateFormat('EEE, d MMMM');
+final DateFormat _dateWithYear = DateFormat('EEE, d MMMM y');
+final DateFormat _time = DateFormat('h:mm a');
+
+/// Heading over one day of calls: "Today", "Yesterday", the weekday within a week, then the date
+/// ("Tue, 10 November", with the year when it is not this one).
+String recentDayLabel(DateTime day, {DateTime? now}) {
+  final DateTime today = now ?? DateTime.now();
+  // Calendar days, counted in UTC so a daylight-saving change cannot shorten one.
+  final int daysAgo = DateTime.utc(today.year, today.month, today.day)
+      .difference(DateTime.utc(day.year, day.month, day.day))
+      .inDays;
+  if (daysAgo <= 0) return 'Today';
+  if (daysAgo == 1) return 'Yesterday';
+  if (daysAgo < 7) return _weekday.format(day);
+  return (day.year == today.year ? _date : _dateWithYear).format(day);
+}
+
+/// Time of a call, "2:05 pm"; the day is in the heading above it.
+String recentTimeLabel(DateTime time) => _time.format(time).toLowerCase();
+
+/// The [recentDayLabel] heading over a day of calls, in recents and in one number's history.
+class DayHeading extends StatelessWidget {
+  const DayHeading(this.label, {super.key});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+      child: Semantics(
+        header: true,
+        child: Text(
+          label,
+          style: TextStyle(
+            color: AppPalette.of(context).muted,
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Contact photo when the number is saved, coloured initials otherwise. No platform call.
@@ -161,7 +204,7 @@ Future<void> showNumberActions(BuildContext context, {required String number, re
     case 'contact':
       await Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactDetailsPage(contact: contact!)));
     case 'add':
-      await Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactEditorPage(initialNumber: number)));
+      await ContactEditorPage.saveNumber(context, number);
     case 'block':
       final bool block = await confirmAction(
         context,

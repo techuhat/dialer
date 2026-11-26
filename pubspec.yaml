@@ -30,9 +30,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+# Android icons are drawn by tool/app_icon_test.dart from the dial's own mark; this makes iOS's.
 flutter_launcher_icons:
-  android: "launcher_icon"
+  android: false
   ios: true
-  image_path: "launcher_padded.png"
-  adaptive_icon_background: "#0A1929"
-  adaptive_icon_foreground: "launcher_padded.png"
+  image_path: "assets/brand/app_icon_ios.png"
+  remove_alpha_ios: true

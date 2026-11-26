@@ -23,7 +23,15 @@ class CallChannel(private val activity: Activity) : MethodChannel.MethodCallHand
         val number = call.argument<String>("number")?.trim().orEmpty()
         val simSlot = call.argument<Int>("simSlot")
         when (call.method) {
-            "getCallLog" -> return inBackground(result) { CallHistory.query(context) }
+            "getCallLog" -> return inBackground(result) {
+                CallHistory.page(
+                    context,
+                    limit = call.argument<Number>("limit")?.toInt() ?: CallHistory.PAGE,
+                    beforeDate = call.argument<Number>("beforeDate")?.toLong(),
+                    beforeId = call.argument<Number>("beforeId")?.toLong(),
+                    number = number.takeIf { it.isNotEmpty() },
+                )
+            }
             "deleteCallLog" -> return inBackground(result) {
                 CallHistory.delete(context, call.argument<List<String>>("ids").orEmpty())
             }

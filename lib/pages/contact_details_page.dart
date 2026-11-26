@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../core/models/contact.dart';
@@ -7,6 +9,7 @@ import '../core/services/contacts_service.dart';
 import '../core/services/theme_service.dart';
 import '../core/call_launcher.dart';
 import '../core/utils/format_utils.dart';
+import '../core/widgets/contact_avatar.dart';
 import '../core/widgets/photo_backdrop.dart';
 import 'contact_editor_page.dart';
 
@@ -23,11 +26,26 @@ class _ContactDetailsPageState extends State<ContactDetailsPage> {
   late Contact _contact;
   ContactPhotoSettings? _photoSettings;
 
+  /// Null until measured; the header waits for it so a sharp photo does not flash as a circle first.
+  Size? _photoSize;
+  bool _photoMeasured = false;
+
   @override
   void initState() {
     super.initState();
     _contact = widget.contact;
     _loadPhotoSettings();
+    _measurePhoto();
+  }
+
+  Future<void> _measurePhoto() async {
+    final Uint8List? photo = _contact.bestPhoto;
+    final Size? size = photo == null ? null : await PhotoStyle.measure(photo);
+    if (!mounted) return;
+    setState(() {
+      _photoSize = size;
+      _photoMeasured = true;
+    });
   }
 
   Future<void> _loadPhotoSettings() async {
@@ -41,12 +59,33 @@ class _ContactDetailsPageState extends State<ContactDetailsPage> {
     }
   }
 
-  Widget _buildPhotoBackground() => PhotoBackdrop(
-        photo: _contact.bestPhoto!,
-        settings: _photoSettings,
-        defaultOverlay: 0.2,
-        topShade: 0.3,
-      );
+  /// A sharp photo fills the header; a small one sits in a circle over a wash of its colours.
+  Widget _buildPhotoBackground(Uint8List photo, bool isDarkMode) {
+    if (!_photoMeasured) return const SizedBox.expand();
+    // Behind the app bar icons, in the colour that keeps them legible over any photo.
+    final Color shade = isDarkMode ? Colors.black : Colors.white;
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        if (PhotoStyle.of(photo, _photoSize) == PhotoStyle.poster)
+          PhotoBackdrop(photo: photo, settings: _photoSettings, defaultOverlay: 0.2, topShade: 0.3)
+        else ...<Widget>[
+          PhotoBackdrop(photo: photo, settings: _photoSettings, defaultOverlay: 0.45, topShade: 1, wash: true),
+          Center(child: ContactAvatar(name: _contact.displayName, photo: photo, size: 132)),
+        ],
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              stops: const <double>[0, 0.45],
+              colors: <Color>[shade.withValues(alpha: 0.5), shade.withValues(alpha: 0)],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -94,6 +133,7 @@ class _ContactDetailsPageState extends State<ContactDetailsPage> {
                     Navigator.pop(context); // deleted in the editor
                   } else {
                     setState(() => _contact = updated);
+                    _measurePhoto();
                   }
                 },
               ),
@@ -106,7 +146,7 @@ class _ContactDetailsPageState extends State<ContactDetailsPage> {
             ],
             flexibleSpace: FlexibleSpaceBar(
               background: _contact.bestPhoto != null
-                  ? _buildPhotoBackground()
+                  ? _buildPhotoBackground(_contact.bestPhoto!, isDarkMode)
                   : Container(
                       color: const Color(0xFF42A5F5).withValues(alpha: 0.3),
                       child: Center(

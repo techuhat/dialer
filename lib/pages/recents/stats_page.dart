@@ -40,6 +40,7 @@ class _StatsPageState extends State<StatsPage> {
     _subscription = CallLogService.watch().listen((_) {
       if (mounted) setState(() => _stats = CallLogService.statistics(period: _period.length));
     });
+    _cover(_period);
   }
 
   @override
@@ -48,10 +49,17 @@ class _StatsPageState extends State<StatsPage> {
     super.dispose();
   }
 
-  void _setPeriod(_Period period) => setState(() {
-        _period = period;
-        _stats = CallLogService.statistics(period: period.length);
-      });
+  /// Recents load a page at a time; a period needs every call in it. Each page that arrives
+  /// updates the numbers through the subscription.
+  void _cover(_Period period) => CallLogService.loadSince(DateTime.now().subtract(period.length));
+
+  void _setPeriod(_Period period) {
+    setState(() {
+      _period = period;
+      _stats = CallLogService.statistics(period: period.length);
+    });
+    _cover(period);
+  }
 
   @override
   Widget build(BuildContext context) {

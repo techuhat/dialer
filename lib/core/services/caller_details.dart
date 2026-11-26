@@ -1,4 +1,7 @@
 import 'dart:typed_data';
+import 'dart:ui' show Size;
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../models/contact.dart';
 import '../models/contact_photo_settings.dart';
@@ -8,15 +11,20 @@ import 'contacts_service.dart';
 
 /// Contact extras for a call screen: photo, phone label and photo display settings.
 class CallerDetails {
-  const CallerDetails({this.contact, this.photoSettings, this.number = ''});
+  const CallerDetails({this.contact, this.photoSettings, this.photoSize, this.number = ''});
 
   final Contact? contact;
   final ContactPhotoSettings? photoSettings;
+
+  /// Pixel size of [photo]; it decides between the poster and the circle.
+  final Size? photoSize;
   final String number;
 
   static final Map<String, CallerDetails> _cache = <String, CallerDetails>{};
 
   Uint8List? get photo => contact?.bestPhoto;
+
+  PhotoStyle get photoStyle => PhotoStyle.of(photo, photoSize);
 
   /// The label of the dialled number on the contact, e.g. "Mobile" or "Work".
   String? get phoneLabel {
@@ -42,8 +50,18 @@ class CallerDetails {
     } catch (_) {
       // No contacts permission: the call screens fall back to the number and initials.
     }
-    return _cache[key] = CallerDetails(contact: contact, photoSettings: settings, number: number);
+    final Uint8List? photo = contact?.bestPhoto;
+    final Size? photoSize = photo == null ? null : await PhotoStyle.measure(photo);
+    return _cache[key] = CallerDetails(
+      contact: contact,
+      photoSettings: settings,
+      photoSize: photoSize,
+      number: number,
+    );
   }
 
   static void clearCache() => _cache.clear();
+
+  @visibleForTesting
+  static void remember(CallerDetails details) => _cache[PhoneUtils.matchKey(details.number)] = details;
 }

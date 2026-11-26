@@ -17,9 +17,14 @@ import com.techuhat.umar.util.SimHelper
  * Reads and writes must run off the main thread.
  */
 object CallHistory {
-    private const val MAX_ROWS = 1000
+    const val PAGE = 100
     private const val SQL_ARG_CHUNK = 500
     private const val CHANGE_DEBOUNCE_MS = 400L
+    private const val NEWEST_FIRST = "${Calls.DATE} DESC, ${Calls._ID} DESC"
+
+    // Keyset paging: everything after the last row of the previous page, in NEWEST_FIRST order.
+    private const val OLDER_THAN_ROW = "(${Calls.DATE} < ? OR (${Calls.DATE} = ? AND ${Calls._ID} < ?))"
+    private const val OLDER_THAN_DATE = "${Calls.DATE} < ?"
 
     private val PROJECTION = arrayOf(
         Calls._ID, Calls.NUMBER, Calls.DATE, Calls.DURATION, Calls.TYPE, Calls.IS_READ,
@@ -29,19 +34,42 @@ object CallHistory {
 
     private var observer: ContentObserver? = null
 
-    /** Null when the call log cannot be read (no permission), so callers keep what they have. */
-    fun query(context: Context): List<Map<String, Any?>>? {
+    /**
+     * One page of the log, newest first: at most [limit] calls older than the row ([beforeDate],
+     * [beforeId]), only calls with [number] when given (matched by [PhoneNumbers.key], as Flutter
+     * does). `more` says whether older calls are left. Null when the log cannot be read (no
+     * permission), so callers keep what they have.
+     */
+    fun page(context: Context, limit: Int, beforeDate: Long?, beforeId: Long?, number: String?): Map<String, Any?>? {
         val slots = accountSlots(context)
         val networkNames = NetworkNames.all(context)
-        val uri = Calls.CONTENT_URI.buildUpon()
-            .appendQueryParameter(Calls.LIMIT_PARAM_KEY, MAX_ROWS.toString())
-            .build()
+        val (selection, args) = when {
+            beforeDate == null -> null to null
+            beforeId == null -> OLDER_THAN_DATE to arrayOf(beforeDate.toString())
+            else -> OLDER_THAN_ROW to arrayOf(beforeDate.toString(), beforeDate.toString(), beforeId.toString())
+        }
+        val key = number?.let(PhoneNumbers::key)
+        // One row past the page tells whether more are left. A number is matched here, not in SQL,
+        // so then the provider cannot stop early.
+        val uri = if (key != null) {
+            Calls.CONTENT_URI
+        } else {
+            Calls.CONTENT_URI.buildUpon().appendQueryParameter(Calls.LIMIT_PARAM_KEY, (limit + 1).toString()).build()
+        }
         return try {
-            context.contentResolver.query(uri, PROJECTION, null, null, "${Calls.DATE} DESC")?.use { cursor ->
-                val rows = ArrayList<Map<String, Any?>>(cursor.count)
-                while (cursor.moveToNext()) rows += row(cursor, slots, networkNames)
-                rows
-            }.orEmpty()
+            context.contentResolver.query(uri, PROJECTION, selection, args, NEWEST_FIRST)?.use { cursor ->
+                val rows = ArrayList<Map<String, Any?>>()
+                var more = false
+                while (cursor.moveToNext()) {
+                    if (key != null && PhoneNumbers.key(cursor.getString(1)) != key) continue
+                    if (rows.size == limit) {
+                        more = true
+                        break
+                    }
+                    rows += row(cursor, slots, networkNames)
+                }
+                mapOf("rows" to rows, "more" to more)
+            } ?: mapOf("rows" to emptyList<Map<String, Any?>>(), "more" to false)
         } catch (_: SecurityException) {
             null
         }

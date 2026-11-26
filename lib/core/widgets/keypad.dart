@@ -22,13 +22,16 @@ class KeypadStyle {
 
 /// The 4×3 phone keypad shared by the dialpad tab and the in-call DTMF pad.
 class Keypad extends StatelessWidget {
-  const Keypad({required this.style, required this.onKey, this.onAlternate, super.key});
+  const Keypad({required this.style, required this.onKey, this.onAlternate, this.clicks = true, super.key});
 
   final KeypadStyle style;
   final ValueChanged<String> onKey;
 
   /// Long-press value: `+` on 0, pause `,` on * and wait `;` on #. Null disables long-press.
   final ValueChanged<String>? onAlternate;
+
+  /// Touch click on each press. Off in a call, where the DTMF tone is the feedback.
+  final bool clicks;
 
   static const List<_Key> _keys = <_Key>[
     _Key('1'),
@@ -68,13 +71,13 @@ class Keypad extends StatelessWidget {
       keyData: key,
       style: style,
       onTap: () {
-        KeypadFeedback.key();
+        KeypadFeedback.key(sound: clicks);
         onKey(key.digit);
       },
       onLongPress: alternate == null || key.alternate == null
           ? null
           : () {
-              KeypadFeedback.alternateKey();
+              KeypadFeedback.alternateKey(sound: clicks);
               alternate(key.alternate!);
             },
     );
@@ -113,6 +116,8 @@ class _KeypadButton extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
+          // KeypadFeedback gives the click and the buzz; the ink's own would click a second time.
+          enableFeedback: false,
           child: SizedBox.square(
             dimension: style.size,
             child: Column(

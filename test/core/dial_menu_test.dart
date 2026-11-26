@@ -43,6 +43,7 @@ void main() {
 
   Finder dial() => find.bySemanticsLabel('Page menu');
   bool isOpen() => find.text('Notes').evaluate().isNotEmpty;
+  RotaryDialFace face(WidgetTester tester) => tester.widget<RotaryDialFace>(find.byType(RotaryDialFace));
 
   testWidgets('tap opens the pages and tapping one opens it', (WidgetTester tester) async {
     await pumpMenu(tester);
@@ -91,11 +92,23 @@ void main() {
     await gesture.moveTo(tester.getCenter(find.byIcon(Icons.people_outline)));
     await tester.pumpAndSettle();
     expect(find.text('Contacts'), findsNWidgets(2), reason: 'the caption names the lit page');
+    expect(
+      face(tester).light,
+      closeTo(RotaryDial.tickToward(const Offset(-0.59, -0.81)), 0.3),
+      reason: 'the ticks facing Contacts, up-left, light up',
+    );
 
     await gesture.up();
-    await tester.pumpAndSettle();
+    await tester.pump();
     expect(selected, <int>[1]);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(face(tester).turns, greaterThan(0), reason: 'the ring dials the lit tick');
+    expect(face(tester).light, isNotNull, reason: 'the lit tick travels with the ring');
+
+    await tester.pumpAndSettle();
     expect(isOpen(), isFalse);
+    expect(face(tester).turns, 0);
+    expect(face(tester).light, isNull);
   });
 
   testWidgets('hold and let go away from the pages just closes', (WidgetTester tester) async {
@@ -106,9 +119,24 @@ void main() {
     expect(isOpen(), isTrue);
 
     await gesture.up();
+    await tester.pump();
+    expect(face(tester).turns, 0, reason: 'nothing dialled');
     await tester.pumpAndSettle();
     expect(selected, isEmpty);
     expect(isOpen(), isFalse);
+    expect(face(tester).light, isNull);
+  });
+
+  testWidgets('the easter egg spins the dial once all the way round', (WidgetTester tester) async {
+    await pumpMenu(tester);
+    RotaryDial.spins.value++;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(face(tester).turns, greaterThan(0.2));
+
+    await tester.pumpAndSettle();
+    expect(face(tester).turns, 0);
+    expect(face(tester).light, isNull);
   });
 
   testWidgets('dragging off the dial works without waiting for the hold', (WidgetTester tester) async {

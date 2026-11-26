@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -16,7 +17,7 @@ import '../contact_details_page.dart';
 import '../contact_editor_page.dart';
 import 'recent_widgets.dart';
 
-/// Every logged call with one number, plus the actions for it.
+/// One number: who it is, the actions for it, a summary of its calls and then the calls by day.
 class CallDetailsPage extends StatefulWidget {
   const CallDetailsPage({required this.number, required this.name, super.key});
 
@@ -28,22 +29,32 @@ class CallDetailsPage extends StatefulWidget {
 }
 
 class _CallDetailsPageState extends State<CallDetailsPage> {
-  StreamSubscription<List<CallLogEntry>>? _subscription;
+  /// Calls listed at first, and how many each "Show more" adds; the summary covers the rest.
+  static const int _firstCalls = 15;
+  static const int _moreCalls = 30;
+
+  StreamSubscription<List<CallLogEntry>>? _changes;
   List<CallLogEntry> _calls = const <CallLogEntry>[];
+  int _shown = _firstCalls;
 
   @override
   void initState() {
     super.initState();
+    // The pages already loaded draw at once; the whole history replaces them when it arrives.
     _calls = _forNumber(CallLogService.entries);
-    _subscription = CallLogService.watch().listen((List<CallLogEntry> entries) {
-      if (mounted) setState(() => _calls = _forNumber(entries));
-    });
+    _load();
+    _changes = CallLogService.changes.listen((_) => _load());
   }
 
   @override
   void dispose() {
-    _subscription?.cancel();
+    _changes?.cancel();
     super.dispose();
+  }
+
+  Future<void> _load() async {
+    final List<CallLogEntry>? calls = await CallLogService.historyFor(widget.number);
+    if (mounted && calls != null) setState(() => _calls = calls);
   }
 
   List<CallLogEntry> _forNumber(List<CallLogEntry> entries) => widget.number.isEmpty
@@ -74,11 +85,7 @@ class _CallDetailsPageState extends State<CallDetailsPage> {
     final String name = contact?.displayName ?? widget.name;
     final String formatted = PhoneUtils.formatPhoneNumber(widget.number);
 
-    return Scaffold(
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 32),
-          children: <Widget>[
+    final List<Widget> top = <Widget>[
             PageHeader(
               title: '',
               onBack: () => Navigator.pop(context),
@@ -123,20 +130,56 @@ class _CallDetailsPageState extends State<CallDetailsPage> {
             const SizedBox(height: 24),
             if (widget.number.isNotEmpty) _actions(context, contact, palette),
             const SizedBox(height: 16),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-              child: Text(
-                'Call history',
-                style: TextStyle(color: palette.muted, fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.4),
-              ),
-            ),
             if (_calls.isEmpty)
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: Text('No calls in the log.', style: TextStyle(color: palette.muted)),
-              ),
-            for (final CallLogEntry call in _calls) _CallRow(call: call),
-          ],
+              )
+            else
+              _HistorySummary(calls: _calls),
+    ];
+    final List<Object> history = _historyRows();
+    final int hidden = _calls.length - math.min(_shown, _calls.length);
+
+    return Scaffold(
+      body: SafeArea(
+        child: ListView.builder(
+          padding: const EdgeInsets.only(bottom: 32),
+          itemCount: top.length + history.length + (hidden > 0 ? 1 : 0),
+          itemBuilder: (BuildContext context, int index) {
+            if (index < top.length) return top[index];
+            final int at = index - top.length;
+            if (at == history.length) return _showMore(hidden);
+            final Object row = history[at];
+            return row is String ? DayHeading(row) : _CallRow(call: row as CallLogEntry);
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Day headings (String) and calls, as far as "Show more" has opened the history.
+  List<Object> _historyRows() {
+    final DateTime now = DateTime.now();
+    final List<Object> rows = <Object>[];
+    String? day;
+    for (final CallLogEntry call in _calls.take(_shown)) {
+      final String label = recentDayLabel(call.timestamp, now: now);
+      if (label != day) rows.add(day = label);
+      rows.add(call);
+    }
+    return rows;
+  }
+
+  Widget _showMore(int hidden) {
+    final int next = math.min(hidden, _moreCalls);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: Center(
+        child: TextButton.icon(
+          onPressed: () => setState(() => _shown += _moreCalls),
+          icon: const Icon(Icons.expand_more_rounded),
+          label: Text('Show $next more ${next == 1 ? 'call' : 'calls'}'),
         ),
       ),
     );
@@ -170,15 +213,93 @@ class _CallDetailsPageState extends State<CallDetailsPage> {
             Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactDetailsPage(contact: contact)));
           })
         else
-          action(Icons.person_add_alt_1_outlined, 'Add', () {
-            Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ContactEditorPage(initialNumber: widget.number)));
-          }),
+          action(Icons.person_add_alt_1_outlined, 'Add', () => ContactEditorPage.saveNumber(context, widget.number)),
         action(Icons.copy_rounded, 'Copy', () => CallLauncher.copyNumber(context, widget.number)),
       ],
     );
   }
 }
 
+/// What one number's history adds up to: calls, talk time, the first call and each kind's count.
+class _HistorySummary extends StatelessWidget {
+  const _HistorySummary({required this.calls});
+
+  final List<CallLogEntry> calls;
+
+  @override
+  Widget build(BuildContext context) {
+    final AppPalette palette = AppPalette.of(context);
+    final Map<CallType, int> counts = <CallType, int>{};
+    int talk = 0;
+    for (final CallLogEntry call in calls) {
+      counts.update(call.type, (int count) => count + 1, ifAbsent: () => 1);
+      talk += call.duration;
+    }
+    final DateTime first = calls.last.timestamp;
+    Widget figure(String value, String label) => Expanded(
+          child: Column(
+            children: <Widget>[
+              Text(
+                value,
+                maxLines: 1,
+                style: TextStyle(
+                  color: palette.text,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(label, style: TextStyle(color: palette.muted, fontSize: 12.5)),
+            ],
+          ),
+        );
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+      padding: const EdgeInsets.fromLTRB(8, 16, 8, 14),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: palette.border),
+      ),
+      child: Column(
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              figure('${calls.length}', calls.length == 1 ? 'call' : 'calls'),
+              figure(talk == 0 ? '0s' : TimeUtils.formatDuration(talk), 'talk time'),
+              figure(DateFormat(first.year == DateTime.now().year ? 'd MMM' : 'MMM y').format(first), 'first call'),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 16,
+            runSpacing: 6,
+            children: <Widget>[
+              for (final CallType type in CallType.values)
+                if (counts[type] case final int count)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Icon(CallTypeVisual.of(type).icon, size: 16, color: CallTypeVisual.colorOf(type, palette)),
+                      const SizedBox(width: 4),
+                      Text(
+                        '$count ${CallTypeVisual.of(type).label.toLowerCase()}',
+                        style: TextStyle(color: palette.muted, fontSize: 13),
+                      ),
+                    ],
+                  ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One call on one line: the kind, the time, the SIM and network extras, and how long it lasted.
 class _CallRow extends StatelessWidget {
   const _CallRow({required this.call});
 
@@ -188,20 +309,39 @@ class _CallRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final AppPalette palette = AppPalette.of(context);
     final CallTypeVisual visual = CallTypeVisual.of(call.type);
-    final List<String> details = <String>[
-      DateFormat('EEE d MMM, h:mm a').format(call.timestamp),
+    const List<FontFeature> figures = <FontFeature>[FontFeature.tabularFigures()];
+    final String extras = <String>[
+      visual.label,
       if (call.simSlot != null) 'SIM ${call.simSlot! + 1}',
       if (call.isHd) 'HD',
       if (call.isWifi) 'Wi-Fi',
-    ];
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-      leading: Icon(visual.icon, color: CallTypeVisual.colorOf(call.type, palette)),
-      title: Text(visual.label, style: TextStyle(color: palette.text, fontWeight: FontWeight.w600)),
-      subtitle: Text(details.join(' · '), style: TextStyle(color: palette.muted)),
-      trailing: call.duration > 0
-          ? Text(TimeUtils.formatDuration(call.duration), style: TextStyle(color: palette.muted))
-          : null,
+    ].join(' · ');
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: Row(
+        children: <Widget>[
+          Icon(visual.icon, size: 18, color: CallTypeVisual.colorOf(call.type, palette)),
+          const SizedBox(width: 14),
+          Text(
+            recentTimeLabel(call.timestamp),
+            style: TextStyle(color: palette.text, fontSize: 15, fontWeight: FontWeight.w600, fontFeatures: figures),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              extras,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: palette.muted, fontSize: 13.5),
+            ),
+          ),
+          if (call.duration > 0)
+            Text(
+              TimeUtils.formatDuration(call.duration),
+              style: TextStyle(color: palette.muted, fontSize: 13.5, fontFeatures: figures),
+            ),
+        ],
+      ),
     );
   }
 }

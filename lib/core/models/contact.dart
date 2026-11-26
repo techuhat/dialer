@@ -35,6 +35,16 @@ class Contact {
   PhoneNumber? get primaryPhone => phones.isNotEmpty ? phones.first : null;
   String get primaryPhoneNumber => primaryPhone?.number ?? '';
 
+  static final RegExp _nonDigit = RegExp(r'\D');
+
+  /// Search match: the name contains [query], or a number contains its digits. [query] is
+  /// expected trimmed and in lower case.
+  bool matches(String query) {
+    if (query.isEmpty || displayName.toLowerCase().contains(query)) return true;
+    final String digits = query.replaceAll(_nonDigit, '');
+    return digits.isNotEmpty && phones.any((PhoneNumber phone) => phone.number.replaceAll(_nonDigit, '').contains(digits));
+  }
+
   Map<String, dynamic> toMap() {
     return {
       'id': id,

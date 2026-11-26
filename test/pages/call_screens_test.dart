@@ -4,9 +4,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:umar_dailer/core/call_manager.dart';
 import 'package:umar_dailer/core/call_service.dart';
+import 'package:umar_dailer/core/models/contact.dart';
 import 'package:umar_dailer/core/models/live_call.dart';
+import 'package:umar_dailer/core/services/caller_details.dart';
+import 'package:umar_dailer/core/widgets/contact_avatar.dart';
 import 'package:umar_dailer/pages/call/in_call_screen.dart';
 import 'package:umar_dailer/pages/call/incoming_call_screen.dart';
+
+import '../helpers/photos.dart';
 
 Map<String, Object?> _call(String id, String state, {String? name, String number = '9876543210'}) =>
     <String, Object?>{
@@ -27,6 +32,7 @@ void main() {
   setUp(() {
     manager.reset();
     commands.clear();
+    CallerDetails.clearCache();
     SharedPreferences.setMockInitialValues(<String, Object>{});
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       CallService.channel,
@@ -89,6 +95,27 @@ void main() {
       expect(commands.single.method, 'reject');
       await unmount(tester);
     });
+
+    testWidgets('a caller with a sharp photo gets a poster: photo once, name at the top', (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
+      final Uint8List photo = (await tester.runAsync(() => pngBytes(720, 720)))!;
+      CallerDetails.remember(
+        CallerDetails(
+          contact: Contact(id: '1', name: 'Asha Verma', phones: const <PhoneNumber>[], photoBytes: photo),
+          photoSize: const Size(720, 720),
+          number: '9876543210',
+        ),
+      );
+      show(<Map<String, Object?>>[_call('c1', 'ringing', name: 'Asha Verma')]);
+      await pumpScreen(tester, const IncomingCallScreen());
+
+      expect(photoPaints, findsOneWidget);
+      expect(find.byType(ContactAvatar), findsNothing);
+      expect(tester.getCenter(find.text('Asha Verma')).dy, lessThan(780 * 0.3));
+      await unmount(tester);
+    });
   });
 
   group('InCallScreen', () {
@@ -115,6 +142,27 @@ void main() {
       await tester.pump();
 
       expect(commands.map((MethodCall c) => c.method), contains('end'));
+      await unmount(tester);
+    });
+
+    testWidgets('the keypad sends DTMF without a touch click on top of the tone', (WidgetTester tester) async {
+      final List<String> platform = <String>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (MethodCall call) async {
+        platform.add(call.method);
+        return null;
+      });
+      addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      show(<Map<String, Object?>>[_call('c1', 'active')]);
+      await pumpScreen(tester, const InCallScreen());
+
+      await tester.tap(find.text('Keypad'));
+      await tester.pump();
+      platform.clear();
+      await tester.tap(find.text('5'));
+      await tester.pump();
+
+      expect(commands.map((MethodCall c) => c.method), contains('dtmf'));
+      expect(platform, isNot(contains('SystemSound.play')));
       await unmount(tester);
     });
 

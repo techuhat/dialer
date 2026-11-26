@@ -7,7 +7,7 @@ import 'package:umar_dailer/core/theme.dart';
 import 'package:umar_dailer/core/widgets/dial_menu.dart';
 import 'package:umar_dailer/core/widgets/dialer_nav_bar.dart';
 import 'package:umar_dailer/core/widgets/nav_parts.dart';
-import 'package:umar_dailer/pages/dialpad_page.dart';
+import 'package:umar_dailer/pages/dialpad/dialpad_page.dart';
 
 const List<NavDestination> _pages = <NavDestination>[
   NavDestination(icon: Icons.schedule_outlined, selectedIcon: Icons.schedule, label: 'Recents'),
@@ -56,7 +56,7 @@ void main() {
 
   testWidgets('the Call button sits just above the classic bar', (WidgetTester tester) async {
     await _pumpKeypad(tester, dialMenu: false);
-    final Rect call = tester.getRect(find.widgetWithText(FilledButton, 'Call'));
+    final Rect call = tester.getRect(find.bySemanticsLabel('Call'));
     final Rect bar = tester.getRect(find.byType(DialerNavBar));
 
     expect(bar.top - call.bottom, inInclusiveRange(0, 16));
@@ -65,7 +65,7 @@ void main() {
 
   testWidgets('the Call button sits just above the dial menu', (WidgetTester tester) async {
     await _pumpKeypad(tester, dialMenu: true);
-    final Rect call = tester.getRect(find.widgetWithText(FilledButton, 'Call'));
+    final Rect call = tester.getRect(find.bySemanticsLabel('Call'));
     final Rect dial = tester.getRect(find.bySemanticsLabel('Page menu'));
 
     expect(dial.top - call.bottom, inInclusiveRange(8, 32));

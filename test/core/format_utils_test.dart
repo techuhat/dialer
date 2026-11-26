@@ -17,6 +17,25 @@ void main() {
     });
   });
 
+  group('PhoneUtils.groupBreaks', () {
+    test('groups Indian mobiles with and without a prefix', () {
+      expect(PhoneUtils.groupBreaks('9876543210'), <int>[4]);
+      expect(PhoneUtils.groupBreaks('+919876543210'), <int>[2, 7]);
+      expect(PhoneUtils.groupBreaks('09876543210'), <int>[5]);
+      expect(PhoneUtils.groupBreaks('+12125551234'), <int>[1, 4, 7]);
+    });
+
+    test('adds no gap after the last digit or inside codes and landlines', () {
+      expect(PhoneUtils.groupBreaks('98765'), isEmpty);
+      expect(PhoneUtils.groupBreaks('987654'), <int>[4]);
+      expect(PhoneUtils.groupBreaks('+91'), isEmpty);
+      expect(PhoneUtils.groupBreaks('*#06#'), isEmpty);
+      expect(PhoneUtils.groupBreaks('9876543210,123'), isEmpty);
+      expect(PhoneUtils.groupBreaks('02212345678'), isEmpty);
+      expect(PhoneUtils.groupBreaks(''), isEmpty);
+    });
+  });
+
   group('NameUtils', () {
     test('initials use the first and last word', () {
       expect(NameUtils.initials('john ronald doe'), 'JD');

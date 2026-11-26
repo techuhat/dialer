@@ -1,8 +1,6 @@
 package com.techuhat.umar.notification
 
 import android.content.Context
-import android.media.RingtoneManager
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.techuhat.umar.MainActivity
 import com.techuhat.umar.R
@@ -44,9 +42,6 @@ object IncomingCallNotification {
             builder.addAction(
                 NotificationKit.action(context, R.drawable.ic_notif_end_call, "End & answer", NotificationKit.ACTION_END_AND_ANSWER),
             )
-        }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            builder.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
         }
         NotificationKit.post(context, NotificationKit.INCOMING_ID, builder.build())
     }

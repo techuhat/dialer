@@ -14,7 +14,7 @@ import '../core/widgets/dial_menu.dart';
 import '../core/widgets/dialer_nav_bar.dart';
 import '../core/widgets/nav_parts.dart';
 import 'contacts_page.dart';
-import 'dialpad_page.dart';
+import 'dialpad/dialpad_page.dart';
 import 'notes_page.dart';
 import 'recents/recents_page.dart';
 import 'settings_page.dart';
